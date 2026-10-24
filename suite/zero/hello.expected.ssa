@@ -110,15 +110,15 @@ fn __step(d: i64)
     ret
 
 
-; the context: one field per feature-scope variable — name: scope, merge (feature)
-;   __enabled_platform: user, last (platform)
-;   __enabled_hello: user, last (hello)
-;   __enabled_countdown: user, last (countdown)
-;   __enabled_bye: user, last (bye)
-;   __on_countdown: user, last (countdown)
-;   __on_bye: user, last (bye)
+; the context: one field per feature-scope variable — name: scope (feature)
+;   __enabled_platform: user (platform)
+;   __enabled_hello: user (hello)
+;   __enabled_countdown: user (countdown)
+;   __enabled_bye: user (bye)
+;   __on_countdown: user (countdown)
+;   __on_bye: user (bye)
 ;   out: the output device, which stores nothing (platform)
-;   in: user, last (platform)
+;   in: device (platform)
 ;   i: no storage, no word reading it: a push into it calls its edges (countdown)
 ;   __out_n, __clock, __out_p, __out_m: the context's own output and clock (question 107): how much it has written, its time, its capture and its marks
 type __ctx = struct

@@ -255,7 +255,8 @@ pub struct Field {
 #[derive(Clone)]
 pub struct VarDecl {
     pub line: usize,
-    /// the scope words in front: `static`, `device`, `group`
+    /// the scope words in front: `user`, `group`, `global` (fm3
+    /// places.md, question 149); none is one person's on one device
     pub scope: Vec<String>,
     pub ty: String,
     pub name: String,
@@ -265,8 +266,6 @@ pub struct VarDecl {
     /// `int kick[] wrapped = [...]`: how it is read by a coordinate
     pub rule: Option<Rule>,
     pub init: Option<Init>,
-    /// `merge sum`: how two writes combine
-    pub merge: Option<String>,
     /// `at (48000 hz)`: a stream at a rate
     pub rate: Option<Expr>,
 }
@@ -399,8 +398,32 @@ pub const BUILTIN_TYPES: [&str; 33] = [
     "bfloat16", "int256", "uint256", "int1", "uint1", "char", "byte",
 ];
 
-const SCOPES: [&str; 3] = ["static", "device", "group"];
+/// the scope words (fm3 places.md, "the words", ruled 24 October
+/// 2026): with none a stream is one person's on one device; `user` is
+/// one person's on every device of theirs, `group` everyone's in the
+/// group the context is in, `global` everyone's
+const SCOPES: [&str; 3] = ["user", "group", "global"];
+
+/// ... and the two that left (principle 7, one way to say a thing):
+/// `device` said what no word says, and `static` meant `global`. Read
+/// where a scope word may stand, to be refused showing the line
+const SCOPES_GONE: [&str; 2] = ["device", "static"];
 const UNITS: [&str; 7] = ["hz", "khz", "s", "ms", "us", "ns", "min"];
+
+/// a line with a scope word taken out, or put in another's place:
+/// the first time the word stands alone on it
+fn scope_respelt(text: &str, from: &str, to: &str) -> String {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut at = 0;
+    while let Some(i) = text[at..].find(from).map(|i| at + i) {
+        let end = i + from.len();
+        if !word(text[..i].chars().next_back()) && text[end..].starts_with(' ') {
+            return if to.is_empty() { format!("{}{}", &text[..i], &text[end + 1..]) } else { format!("{}{}{}", &text[..i], to, &text[end..]) };
+        }
+        at = end;
+    }
+    text.to_string()
+}
 
 /// the type names a file declares, found before any file is parsed
 pub fn declared_types(src: &str) -> Vec<String> {
@@ -577,7 +600,7 @@ const JOINERS: [&str; 4] = ["and", "or", "when", "times"];
 /// the words that end a phrase wherever they stand: a statement's own.
 /// `if` is one since fm3 question 79, the word a push takes after its
 /// items, `x$ << item if (c)`, and `until` since log 148
-const ENDS_PHRASE: [&str; 8] = ["then", "else", "while", "until", "if", "forever", "merge", "in"];
+const ENDS_PHRASE: [&str; 7] = ["then", "else", "while", "until", "if", "forever", "in"];
 
 const COUNT_FORM: &str = "a push's count is the bracketed group before `times`, after the item: `x$ << item (n) times`";
 
@@ -757,6 +780,20 @@ impl<'a> Parser<'a> {
         lex::error(self.file, self.line(), msg)
     }
 
+    fn err_at(&self, line: usize, msg: impl Into<String>) -> Error {
+        lex::error(self.file, line, msg)
+    }
+
+    /// A scope word on a local or a parameter (fm3 places.md, question
+    /// 149): a scope word is for a stream declared at feature scope.
+    /// The line is shown without it, or with `global` where it was
+    /// `static`'s, which is the same refusal's other half
+    fn local_scope(&self, w: &str, line: usize) -> Error {
+        let text = self.source(line).unwrap_or("");
+        let said = scope_respelt(text, w, "");
+        self.err_at(line, format!("`{}`: a scope word is for a stream declared at feature scope, outside any function, and '{}' here is the function's own (fm3 places.md, question 149): write `{}`", text, w, said))
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos).map(|t| &t.tok)
     }
@@ -882,7 +919,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Tok::Word(w)) if w == "on" => self.parse_fn().map(Decl::Fn),
             Some(Tok::Word(w)) if w == "type" => self.parse_type().map(Decl::Type),
-            Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) || self.is_type(w) => {
+            Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) || SCOPES_GONE.contains(&w.as_str()) || self.is_type(w) => {
                 let v = self.parse_var()?;
                 self.expect_newline()?;
                 Ok(Decl::Var(v))
@@ -1205,6 +1242,11 @@ impl<'a> Parser<'a> {
                     return Err(self.mark_on_type(&w));
                 }
             }
+            if let Some(Tok::Word(w)) = self.peek().cloned() {
+                if SCOPES.contains(&w.as_str()) || SCOPES_GONE.contains(&w.as_str()) {
+                    return Err(self.local_scope(&w, line));
+                }
+            }
             match self.next()? {
                 Tok::Word(w) if self.is_type(&w) || ty.is_none() => {
                     if !self.is_type(&w) {
@@ -1436,10 +1478,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// `[static|device|group] T name [= expr | (args) | << ...] [merge word]`
+    /// `[user|group|global] T name [= expr | (args) | << ...]`
     fn parse_var(&mut self) -> Result<VarDecl, Error> {
         let line = self.line();
         let mut scope = Vec::new();
+        self.scope_gone(line)?;
+        self.merge_gone(line)?;
         while let Some(Tok::Word(w)) = self.peek() {
             if SCOPES.contains(&w.as_str()) {
                 scope.push(w.clone());
@@ -1493,8 +1537,60 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let merge = if self.eat_word("merge") { Some(self.expect_word()?) } else { None };
-        Ok(VarDecl { line, scope, ty, name, seq, arr, rule, init, merge, rate })
+        Ok(VarDecl { line, scope, ty, name, seq, arr, rule, init, rate })
+    }
+
+    /// the source's line as written, trimmed; None for a case line
+    fn source(&self, line: usize) -> Option<&str> {
+        line.checked_sub(1).and_then(|i| self.lines.get(i)).map(|l| l.trim())
+    }
+
+    /// `device` and `static` left (fm3 places.md, question 149;
+    /// principle 7): each is refused showing the line to write, the
+    /// first with no word, the second with `global`
+    fn scope_gone(&self, line: usize) -> Result<(), Error> {
+        let mut i = self.pos;
+        while let Some(Tok::Word(w)) = self.toks.get(i).map(|t| &t.tok) {
+            if !SCOPES.contains(&w.as_str()) && !SCOPES_GONE.contains(&w.as_str()) {
+                break;
+            }
+            if SCOPES_GONE.contains(&w.as_str()) {
+                let text = self.source(line).unwrap_or("");
+                let (said, how) = if w == "device" {
+                    (scope_respelt(text, "device", ""), "`device` says what no word says: a stream with no scope word is one person's on one device")
+                } else {
+                    (scope_respelt(text, "static", "global"), "`static` is `global`, everyone's")
+                };
+                return Err(self.err_at(line, format!("`{}`: {} (fm3 places.md, question 149): write `{}`", text, how, said)));
+            }
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// `merge <word>` at the end of a declaration left (fm3 places.md,
+    /// "the line is the merge"): what crosses between places is the
+    /// push, so how two writes combine is what the line that pushes
+    /// says. Refused showing the declaration without it
+    fn merge_gone(&self, line: usize) -> Result<(), Error> {
+        let mut end = self.pos;
+        while !matches!(self.toks.get(end).map(|t| &t.tok), Some(Tok::Newline) | None) {
+            end += 1;
+        }
+        if end < self.pos + 2 {
+            return Ok(());
+        }
+        match (self.toks.get(end - 2).map(|t| &t.tok), self.toks.get(end - 1).map(|t| &t.tok)) {
+            (Some(Tok::Word(m)), Some(Tok::Word(_))) if m == "merge" => {
+                let text = self.source(line).unwrap_or("");
+                let said = match text.rfind(" merge ") {
+                    Some(at) => text[..at].trim_end().to_string(),
+                    None => text.to_string(),
+                };
+                Err(self.err_at(line, format!("`{}`: how two writes combine is what the line that pushes says (fm3 places.md, \"the line is the merge\"): `count$ << count$ + 1` is a sum, `size$ << s` the last write stands, `best$ << s if (s > best$)` the better of the two; write `{}`", text, said)))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// `<< a << b`; a bare `<<` at the end of the line is refused by
@@ -1534,7 +1630,7 @@ impl<'a> Parser<'a> {
             }
             let follows = match self.peek() {
                 Some(Tok::Newline) | Some(Tok::Sym(")")) | Some(Tok::Sym(",")) | None => true,
-                Some(Tok::Word(w)) => matches!(w.as_str(), "if" | "while" | "until" | "forever" | "times" | "merge"),
+                Some(Tok::Word(w)) => matches!(w.as_str(), "if" | "while" | "until" | "forever" | "times"),
                 Some(Tok::Sym("(")) => self.count_ahead(None),
                 _ => false,
             };
@@ -1896,7 +1992,7 @@ impl<'a> Parser<'a> {
                 self.expect_newline()?;
                 Ok(Stmt::Check { cond, line })
             }
-            Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) => Err(self.err(format!("'{}' belongs on a feature-scope variable, outside any function", w))),
+            Some(Tok::Word(w)) if SCOPES.contains(&w.as_str()) || SCOPES_GONE.contains(&w.as_str()) => Err(self.local_scope(&w.clone(), line)),
             // `int total = loop (...) ... yields acc`: a loop's results declared
             Some(Tok::Word(w)) if self.is_type(&w) && self.loop_ahead() => {
                 let mut vars = Vec::new();

@@ -50,16 +50,16 @@ type token = struct
     start: index
     n: index
 
-; the context: one field per feature-scope variable — name: scope, merge (feature)
+; the context: one field per feature-scope variable — name: scope (feature)
 ;   out: the output device, which stores nothing (platform)
-;   in: user, last (platform)
-;   t: user, last (lex)
-;   src: user, last (lex)
-;   u: user, last (lex)
-;   __node1_c: node, last (lex)
-;   __node1_c_seen: node, last (lex)
-;   __node1_fin: node, last (lex)
-;   __node2_c: node, last (lex)
+;   in: device (platform)
+;   t: device (lex)
+;   src: device (lex)
+;   u: device (lex)
+;   __node1_c: node (lex)
+;   __node1_c_seen: node (lex)
+;   __node1_fin: node (lex)
+;   __node2_c: node (lex)
 ;   __out_n, __clock, __out_p: the context's own output and clock (question 107): how much it has written, its time and its capture
 type __ctx = struct
     __out_n: index

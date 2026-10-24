@@ -1,0 +1,5 @@
+group char said$
+said$ << in$ forever
+out$ << said$ forever
+
+on run()

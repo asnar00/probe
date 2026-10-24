@@ -4,11 +4,11 @@ type Vec =
 type Mode = off | on | auto
 
 int size$ << 40
-static int port = 8822
-device int opened$ << 0
-device string open_tool$ << ""
+global int port = 8822
+int opened$ << 0
+string open_tool$ << ""
 group int quota$ << 100
-int count$ << 0 merge sum
+int count$ << 0
 Vec origin$ << Vec(1, 2, 3)
 Mode mode$ << auto
 string name$ << "zero"

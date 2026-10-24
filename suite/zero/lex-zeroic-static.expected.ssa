@@ -51,24 +51,24 @@ type token = struct
     start: index
     n: index
 
-; the context: one field per feature-scope variable — name: scope, merge (feature)
+; the context: one field per feature-scope variable — name: scope (feature)
 ;   out: the output device, which stores nothing (platform)
-;   in: user, last (platform)
-;   t: user, last (lex), a stream of which one value is kept, its latest
+;   in: device (platform)
+;   t: device (lex), a stream of which one value is kept, its latest
 ;   src: no storage, no word reading it: a push into it calls, for each item, what is wired to it (lex)
-;   u: user, last (lex)
-;   __zend_src: node, last (lex)
-;   __z1_at: node, last (lex)
-;   __z1_k_1: node, last (lex)
-;   __z1_n_1: node, last (lex)
-;   __z1_start_1: node, last (lex)
-;   __z2_at: node, last (lex)
-;   __z2_k_1: node, last (lex)
-;   __z2_n_1: node, last (lex)
-;   __z2_start_1: node, last (lex)
-;   __node1_c: node, last (lex)
-;   __node1_c_seen: node, last (lex)
-;   __node1_fin: node, last (lex)
+;   u: device (lex)
+;   __zend_src: node (lex)
+;   __z1_at: node (lex)
+;   __z1_k_1: node (lex)
+;   __z1_n_1: node (lex)
+;   __z1_start_1: node (lex)
+;   __z2_at: node (lex)
+;   __z2_k_1: node (lex)
+;   __z2_n_1: node (lex)
+;   __z2_start_1: node (lex)
+;   __node1_c: node (lex)
+;   __node1_c_seen: node (lex)
+;   __node1_fin: node (lex)
 ;   __out_n, __clock, __out_p: the context's own output and clock (question 107): how much it has written, its time and its capture
 ;   __n_t: how many items 't$' has had, `count t$`, kept beside its latest item where no queue is
 type __ctx = struct

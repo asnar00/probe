@@ -442,10 +442,10 @@ enum TypeInfo {
 struct FVar {
     name: String,
     ty: Ty,
-    /// `user`, `static`, `device` or `group`
+    /// where it lives (fm3 places.md, question 149): `device` for a
+    /// stream with no scope word, the device's own; `user`, `group` or
+    /// `global` as its word says; `node` for a node's own state
     scope: String,
-    /// `last`, or the word after `merge`
-    merge: String,
     feature: String,
     /// declared `int a[]`, an array (fm3 question 90, log 162)
     arr: bool,
@@ -625,6 +625,10 @@ pub struct Call {
     /// time in the clock's steps: handed over before the start, each
     /// arriving when the list reaches it
     pub input_at: Vec<(u8, i64)>,
+    /// the people the case names (hop fifty-seven), in its order, each
+    /// the bytes before the start and those that arrive at a time;
+    /// empty where it names nobody
+    pub people: Vec<(Vec<u8>, Vec<(u8, i64)>)>,
 }
 
 /// the IR every store gets: the arena, the clock, the two functions
@@ -2492,7 +2496,43 @@ impl Lowerer {
     }
 }
 
+/// how many devices a store built for people has memory for (hop
+/// fifty-seven): as many users, one group and the one global
+/// (`store::PEOPLE`, the most a case may name)
+pub const PEOPLE: usize = super::store::PEOPLE;
+
+/// Is the store built for people (fm3 places.md, "half one: whose a
+/// stream is"; hop fifty-seven)? A store that declares a stream a
+/// user's, a group's or everyone's, or a case of which names people.
+/// Every other store is built as it was, with memory for two contexts
+pub fn for_people(store: &Store) -> bool {
+    store.features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Var(v) if !v.scope.is_empty())) || f.cases.iter().any(|c| !c.people.is_empty()))
+}
+
+/// why a store built for people has no placed build yet (hop
+/// fifty-seven): the next hop carries a shared stream over the wire
+fn not_for_a_wire(store: &Store) -> Error {
+    for f in &store.features {
+        for d in &f.code.decls {
+            if let Decl::Var(v) = d {
+                if let Some(w) = v.scope.first() {
+                    return lex::error(&f.code.file, v.line, format!("'{}{}' is {}'s, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire (fm3 places.md; the hop after fifty-seven)", v.name, if v.seq { "$" } else { "" }, match w.as_str() { "user" => "a user", "group" => "a group", _ => "everyone" }));
+                }
+            }
+        }
+        if let Some(c) = f.cases.iter().find(|c| !c.people.is_empty()) {
+            return lex::error(&f.md_file, c.line, "a case here names people, and a store whose cases name people is not yet built for a wire (fm3 places.md; the hop after fifty-seven)");
+        }
+    }
+    lex::error(&store.path.display().to_string(), 0, "not built for a wire")
+}
+
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
+    // a store built for people is at one place this hop (fifty-seven):
+    // its placed build is refused by name
+    if store.places && for_people(store) {
+        return Err(not_for_a_wire(store));
+    }
     // A store where a turn of the list can start a function that
     // pushes at a rate (fm3 question 135, log 232) is lowered again
     // with a pool of activities, and such functions rewritten as
@@ -2546,7 +2586,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty())), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty() || c.people.iter().any(|p| !p.input_at.is_empty()))), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new(), shared: for_people(store), shared_fields: Vec::new(), shared_readers: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -2979,6 +3019,33 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
             ir.push_str(&format!("fn __whole_{}({}){}\n    {}{}\n    __turns({})\n    ret{}\n", f.ir, params.join(", "), head, if got.is_empty() { String::new() } else { format!("{} = ", got.join(", ")) }, call, NEVER - 1, if back.is_empty() { String::new() } else { format!(" {}", back.join(", ")) }));
         }
     }
+    // a store built for people (hop fifty-seven): a case that names
+    // people calls a twin of its function, which calls it on every
+    // device in the order the case names them, then gives everything
+    // still due its turn, and gathers what each device wrote; and the
+    // start is every device's
+    if l.shared {
+        let named: Names = store.features.iter().flat_map(|f| f.cases.iter().filter(|c| !c.people.is_empty())).filter_map(|c| match &c.call.kind {
+            ExprKind::Phrase(parts) => find_methods(&l.funcs, parts, &|_| false, "", c.line).ok().map(|(cands, _)| cands.iter().map(|g| g.ir.clone()).collect::<Vec<_>>()),
+            _ => None,
+        }).flatten().collect();
+        for f in l.funcs.clone().iter().filter(|f| named.contains(&f.ir) && f.feature != OWN && !f.task && f.platform.is_none() && f.params.iter().all(|(_, t)| matches!(t, Ty::Num(_) | Ty::Bool | Ty::Enum(_)))) {
+            if !ir.contains(&format!("\nfn {}(", f.ir)) || ir.contains(&format!("\nfn __people_{}(", f.ir)) {
+                continue;
+            }
+            let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}: {}", n, t.ir())).collect();
+            let got: Vec<String> = f.results.iter().enumerate().map(|(k, (_, t))| format!("r{}: {}", k, t.ir())).collect();
+            let call = format!("{}{}({})", if got.is_empty() { String::new() } else { format!("{} = ", got.join(", ")) }, f.ir, f.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(", "));
+            let turns = if l.listed() { format!("    __turns({})\n", NEVER - 1) } else { String::new() };
+            ir.push_str(&format!("\n; a case that names people calls this (hop fifty-seven): the function on every device, in the order the case names them, everything still due its turn, and what each wrote gathered\nfn __people_{f}({params})\n    sp: ptr = addr __share\n    m: i64 = load sp\n    loop(k: i64 = 0) bound {p}\n        km: u1 = cmp.lt k, m\n        if km\n            k32: i32 = conv k\n            __zero_context(k32)\n            {call}\n            k2: i64 = add k, 1\n            continue k2\n        break\n    z: i32 = const 0\n    __zero_context(z)\n{turns}    __gather()\n    ret\n", f = f.ir, params = params.join(", "), p = PEOPLE, call = call, turns = turns));
+        }
+        ir = people_start(&ir, PEOPLE);
+        // (a device's capture is a quarter of `__out` and of `__out_t`
+        // where it was a half: the GPU's driver has room for no more)
+        let cap = 131072 / PEOPLE;
+        ir = ir.replace("array(i64, 131074)", &format!("array(i64, {})", (cap + 1) * PEOPLE)).replace("    oi: index = mul sw, 65536\n", &format!("    oi: index = mul sw, {}\n", cap)).replace("    ms: index = mul sw, 65537\n", &format!("    ms: index = mul sw, {}\n", cap + 1)).replace("    fits: u1 = cmp.le n2, 65536\n", &format!("    fits: u1 = cmp.le n2, {}\n", cap)).replace("a half of `__out` for each\n; of the store's two contexts", &format!("a part of `__out` for each\n; of the store's {} devices, {} bytes", PEOPLE, cap)).replace("a half of `__out_t` each", "a part of `__out_t` each");
+
+    }
     // an activity ended partway by a `restart` leaves (fm3 log 220)
     let ir = if l.restarts.is_empty() {
         ir
@@ -3017,14 +3084,19 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         roots.insert(entry.to_string());
     }
     // (a function's twin for the runner is reached where it is)
-    let twins: Vec<String> = roots.iter().flat_map(|r| [format!("__said_{}", r), format!("__whole_{}", r)]).collect();
+    let twins: Vec<String> = roots.iter().flat_map(|r| [format!("__said_{}", r), format!("__whole_{}", r), format!("__people_{}", r)]).collect();
+    if l.shared {
+        roots.extend(["__people", "__gather"].map(String::from));
+    }
     roots.extend(twins);
     if l.traced {
         roots.extend(["__trace_word", "__trace_byte"].map(String::from));
     }
     // a store with a case that asserts on time has the marks' reader
     // (fm3 log 91, 95), and so does one whose host asks for the times
-    if store.times || l.wire || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
+    // ... and a store built for people, whose gathering moves marks
+    // (hop fifty-seven)
+    if store.times || l.wire || l.shared || store.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, Expect::Timed(_)))) {
         roots.insert("__out_mark".to_string());
     }
     // what the world calls of a place (fm3 log 269): its list, its
@@ -3117,6 +3189,26 @@ fn settle_pushes(mut ir: String, pushes: &std::collections::BTreeMap<String, Ty>
         ir = ir.replace(&format!("push_queue<{}>(", key), if reached { "push_queue(" } else { "push_queue_open(" });
     }
     ir
+}
+
+/// The start of a store built for people (hop fifty-seven): what the
+/// one start did, the first items handed on and the nodes run, is each
+/// device's, `__start_here`, and the start runs it on every device in
+/// order, then every device's pass again, so that what one device's
+/// start pushed into a shared stream reaches the lines of a device
+/// started before it; then what is due at the start has its turn
+fn people_start(ir: &str, people: usize) -> String {
+    const START: &str = "\nfn __zero_start()\n";
+    let Some(at) = ir.find(START) else { return ir.to_string() };
+    let from = at + START.len();
+    let len = ir[from..].lines().take_while(|l| l.starts_with("    ")).map(|l| l.len() + 1).sum::<usize>();
+    let body = &ir[from..from + len];
+    let turns = body.contains("    __turns(0)\n");
+    let here: String = body.lines().filter(|l| *l != "    __turns(0)" && *l != "    ret").map(|l| format!("{}\n", l)).collect();
+    let run = if ir.contains("\nfn __run()") { "            __run()\n" } else { "" };
+    let again = if run.is_empty() { String::new() } else { format!("    loop(h: i64 = 0) bound {p}\n        hm: u1 = cmp.lt h, m\n        if hm\n            h32: i32 = conv h\n            __zero_context(h32)\n{run}            h2: i64 = add h, 1\n            continue h2\n        break\n", p = people, run = run) };
+    let start = format!("\nfn __zero_start()\n    sp: ptr = addr __share\n    m: i64 = load sp\n    loop(k: i64 = 0) bound {p}\n        km: u1 = cmp.lt k, m\n        if km\n            k32: i32 = conv k\n            __zero_context(k32)\n            __start_here()\n            k2: i64 = add k, 1\n            continue k2\n        break\n{again}    z: i32 = const 0\n    __zero_context(z)\n{turns}    ret\n\n; (hop fifty-seven) one device's start\nfn __start_here()\n{here}    ret\n", p = people, again = again, turns = if turns { "    __turns(0)\n" } else { "" }, here = here);
+    format!("{}{}{}", &ir[..at], start, &ir[from + len..])
 }
 
 /// The context reached once (fm3 log 110), settled in the finished text
@@ -4232,7 +4324,18 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
     // ... and where several things are going on, the twin that
     // computes the whole timeline (fm3 log 217)
     let func = if lowered.ir.contains(&format!("\nfn __whole_{}(", info.ir)) { format!("__whole_{}", info.ir) } else { func };
-    Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes(), input_at: case.input_at.iter().flat_map(|(text, t)| text.bytes().map(|c| (c, *t)).collect::<Vec<_>>()).collect() })
+    let bytes_at = |at: &[(String, i64)]| at.iter().flat_map(|(text, t)| text.bytes().map(|c| (c, *t)).collect::<Vec<_>>()).collect::<Vec<_>>();
+    // ... and where it names people, the twin that runs it on every
+    // device and gathers what each wrote (hop fifty-seven)
+    if !case.people.is_empty() {
+        let twin = format!("__people_{}", info.ir);
+        if !lowered.ir.contains(&format!("\nfn {}(", twin)) {
+            return Err(lex::error(file, case.line, format!("a case that names people calls a function of numbers that is the store's own, and '{}' is not one", info.key)));
+        }
+        let people = case.people.iter().map(|p| (p.input.clone().unwrap_or_default().into_bytes(), bytes_at(&p.input_at))).collect();
+        return Ok(Call { func: twin, args: vals, nrets: 0, times: Vec::new(), expect: case.expect.clone(), context: case.context.clone(), input: Vec::new(), input_at: Vec::new(), people });
+    }
+    Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes(), input_at: bytes_at(&case.input_at), people: Vec::new() })
 }
 
 /// the refusal of an ambiguous call, naming the methods that contend
@@ -4664,6 +4767,18 @@ struct Lowerer {
     /// of a stream processor are written, which their own trees do not
     /// say: the function's name, the wiring's file and line
     wired_at: Vec<(String, String, usize)>,
+    /// a store built for people (hop fifty-seven, `for_people`): a
+    /// context is a device, a user and a group, and the store has
+    /// memory for `PEOPLE` devices
+    shared: bool,
+    /// ... and its streams that are a user's, a group's or everyone's,
+    /// each its name, its word and its field's type, in the order of
+    /// the device's context
+    shared_fields: Vec<(String, String, String)>,
+    /// ... and the lines of `__zero_new` that start each reader of one
+    /// of those where the group's stream starts, for a device made
+    /// after the first
+    shared_readers: Vec<String>,
     /// the streams some `restart` names (fm3 log 220): each has a
     /// phase and the number of its run in the context
     restarts: Names,
@@ -5308,6 +5423,11 @@ impl Lowerer {
     /// want the least of them, which no reader can compute alone
     fn frees(&self, sname: &str) -> bool {
         if !self.queues.contains(sname) || self.read_by_name.contains(sname) {
+            return false;
+        }
+        // a shared stream has a reader in every device's context (hop
+        // fifty-seven), and no reader can see the others'
+        if self.shared_word(sname).is_some() {
             return false;
         }
         self.node_reads.get(sname) == Some(&1)
@@ -6329,7 +6449,7 @@ impl Lowerer {
         }
         for (name, ty) in &w.state() {
             let t = self.ty(ty, false, file, v.line)?;
-            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
+            self.fvars.push(FVar { name: name.clone(), ty: t.clone(), scope: "node".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
             self.zfields.push((name.clone(), t));
         }
         let each = mangle(&w.each.name);
@@ -6666,7 +6786,7 @@ impl Lowerer {
         for n in ended {
             let field = format!("__zend_{}", n);
             let feature = self.fvar(n).map(|f| f.feature.clone()).unwrap_or_default();
-            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), merge: "last".into(), feature, arr: false, rule: None, count: None });
+            self.fvars.push(FVar { name: field.clone(), ty: Ty::Bool, scope: "node".into(), feature, arr: false, rule: None, count: None });
             self.zfields.push((field, Ty::Bool));
             self.zended.insert(n.clone());
         }
@@ -6859,7 +6979,7 @@ impl Lowerer {
             let Ty::Stream(selem) = &sf.ty else { continue };
             let name = format!("__tick{}", self.tick_quiet.len() + 1);
             let lit = |kind: ExprKind, line: usize| Expr { kind, line };
-            let var = |name: String, ty: String, init: Option<Expr>, line: usize| Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty, name, seq: false, arr: false, rule: None, init: init.map(Init::Value), merge: None, rate: None });
+            let var = |name: String, ty: String, init: Option<Expr>, line: usize| Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty, name, seq: false, arr: false, rule: None, init: init.map(Init::Value), rate: None });
             // what each deferred stream's item is called, and whether
             // its push is made for certain
             let item_of = |t: &str| format!("__v_{}", t);
@@ -7947,7 +8067,7 @@ impl Lowerer {
         }
         let keep = |l: &mut Lowerer, said: &str, ty: Ty| {
             let field = format!("__{}{}", said, l.edges.len() + 1);
-            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), merge: "last".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
+            l.fvars.push(FVar { name: field.clone(), ty: ty.clone(), scope: "node".into(), feature: feature.to_string(), arr: false, rule: None, count: None });
             l.zfields.push((field.clone(), ty));
             field
         };
@@ -8003,7 +8123,7 @@ impl Lowerer {
                 // the field back)
                 let local = || Expr { kind: ExprKind::Name("__next".into()), line };
                 let value = std::mem::replace(&mut pushed[0], local());
-                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, arr: false, rule: None, init: Some(Init::Value(value)), merge: None, rate: None }));
+                does.push(Stmt::Var(super::syntax::VarDecl { line, scope: Vec::new(), ty: zero_ty(telem), name: "__next".into(), seq: false, arr: false, rule: None, init: Some(Init::Value(value)), rate: None }));
                 does.push(put(field, local()));
                 pushed = pushed.iter().map(|e| super::syntax::renamed(e, tname, field)).collect();
             }
@@ -8222,7 +8342,7 @@ impl Lowerer {
             return Err(lex::error(file, v.line, format!("'{}' is already a variable of feature {}", v.name, other.feature)));
         }
         if v.scope.len() > 1 {
-            return Err(lex::error(file, v.line, "a variable has one scope word: static, device or group"));
+            return Err(lex::error(file, v.line, "a variable has one scope word: user, group or global"));
         }
         let ty = match self.decl_ty(v, None, file) {
             Ok(t) => t,
@@ -8259,14 +8379,12 @@ impl Lowerer {
                 self.fvar_lits.insert(v.name.clone(), (e, feature.to_string(), file.to_string()));
             }
             let scope: String = v.scope.iter().map(|w| format!("{} ", w)).collect();
-            let merge = v.merge.as_ref().map(|m| format!(" merge {}", m)).unwrap_or_default();
-            self.fvar_said.insert(v.name.clone(), format!("{}{} {}${}{}", scope, v.ty, v.name, first, merge));
+            self.fvar_said.insert(v.name.clone(), format!("{}{} {}${}", scope, v.ty, v.name, first));
         }
         self.fvars.push(FVar {
             name: v.name.clone(),
             ty,
-            scope: v.scope.first().cloned().unwrap_or_else(|| "user".into()),
-            merge: v.merge.clone().unwrap_or_else(|| "last".into()),
+            scope: v.scope.first().cloned().unwrap_or_else(|| "device".into()),
             feature: feature.to_string(),
             arr: v.arr,
             rule: v.rule.clone(),
@@ -8275,8 +8393,91 @@ impl Lowerer {
         Ok(())
     }
 
+    /// A store built for people (fm3 places.md, "half one: whose a
+    /// stream is"; hop fifty-seven). A context is a device, a user and
+    /// a group: a stream with no scope word is the device's own, a
+    /// field of its context as before; one that is a user's, a group's
+    /// or everyone's lives in a struct of that kind, `__user_mem`,
+    /// `__group_mem`, `__global_mem`, and the device holds a copy of
+    /// it in its context while it is the current one. Only one device
+    /// runs at a time at one place, and the current one changes in one
+    /// function, `__zero_context`, which writes the copies back to the
+    /// state of the device it leaves and takes them for the one it
+    /// enters. So every read and push of a shared stream is the load
+    /// and the store of a field it always was, and a store that names
+    /// no scope word is built as it was. The runner says how many
+    /// people there are, `__people(n)`, each one person with one
+    /// device, all in one group
+    fn emit_people(&mut self) {
+        let mut t = String::new();
+        let one = |kind: &str| self.shared_fields.iter().filter(|(_, w, _)| w == kind).cloned().collect::<Vec<_>>();
+        // the copies written back, or taken: a user's, and the group's
+        // with everyone's, each where `user` and `wide` say
+        for (name, back) in [("__share_out", true), ("__share_in", false)] {
+            writeln!(t, "\n; (hop fifty-seven) this device's copies of {} streams: its user's where `user` is 1, its group's and everyone's where `wide` is\nfn {}(user: u1, wide: u1)\n    c: ptr = context()\n    x: __ctx = load c", if back { "the shared streams written back to where they live" } else { "the shared streams taken from where they live" }, name).unwrap();
+            let mut cur = "x".to_string();
+            let mut n = 0;
+            for (kind, flag, at) in [("user", "user", "    ui: index = get x, __user\n    um: ptr(array(__user, PEOPLE)) = addr __user_mem\n    ue: ptr(__user) = index um, ui\n    up: ptr = cast ue\n"), ("group", "wide", "    gi: index = get x, __group\n    gm: ptr(array(__group, 1)) = addr __group_mem\n    ge: ptr(__group) = index gm, gi\n    gp: ptr = cast ge\n"), ("global", "wide", "    lp: ptr = addr __global_mem\n")] {
+                let fs = one(kind);
+                if fs.is_empty() {
+                    continue;
+                }
+                let p = match kind { "user" => "up", "group" => "gp", _ => "lp" };
+                t.push_str(&at.replace("PEOPLE", &PEOPLE.to_string()));
+                writeln!(t, "    if {}", flag).unwrap();
+                writeln!(t, "        s{n}: __{k} = load {p}", n = n, k = kind, p = p).unwrap();
+                let mut sv = format!("s{}", n);
+                for (f, _, ty) in &fs {
+                    n += 1;
+                    if back {
+                        writeln!(t, "        v{n}: {ty} = get x, {f}\n        s{n}: __{k} = set {sv}, {f}, v{n}", n = n, ty = ty, f = f, k = kind, sv = sv).unwrap();
+                        sv = format!("s{}", n);
+                    } else {
+                        writeln!(t, "        v{n}: {ty} = get {s0}, {f}", n = n, ty = ty, f = f, s0 = sv).unwrap();
+                    }
+                }
+                if back {
+                    writeln!(t, "        store {}, {}", sv, p).unwrap();
+                } else {
+                    // (the device's context loaded again: the copies of
+                    // another kind may be in it already)
+                    n += 1;
+                    writeln!(t, "        y{n}: __ctx = load c", n = n).unwrap();
+                    let mut yc = format!("y{}", n);
+                    let mut m = n - fs.len();
+                    for (f, _, _) in &fs {
+                        n += 1;
+                        writeln!(t, "        y{n}: __ctx = set {yc}, {f}, v{m}", n = n, yc = yc, f = f, m = m).unwrap();
+                        yc = format!("y{}", n);
+                        m += 1;
+                    }
+                    writeln!(t, "        store {}, c", yc).unwrap();
+                }
+                n += 1;
+                let _ = &mut cur;
+            }
+            t.push_str("    ret\n");
+        }
+        // the runner's: the k-th device is the current one
+        writeln!(t, "\n; the runner's: the k-th of the store's contexts is the current one. Where both are among the devices made since the reset (hop fifty-seven), the copies of the shared streams the one it leaves holds are written back to where they live, and the one it enters takes them\nfn __zero_context(k: i32)\n    sp: ptr = addr __share\n    n: i64 = load sp\n    c0: i64 = load sp, 8\n    was: u1 = cmp.lt c0, n\n    if was\n        __share_out(1, 1)\n    p: ptr(array(__ctx, {people})) = addr __ctx_mem\n    i: index = conv k\n    e: ptr(__ctx) = index p, i\n    c: ptr = cast e\n    context_set(c)\n    kw: i64 = conv k\n    store kw, sp, 8\n    now: u1 = cmp.lt kw, n\n    if now\n        __share_in(1, 1)\n    ret", people = PEOPLE).unwrap();
+        // ... and how many people a case names
+        writeln!(t, "\n; the runner's, before a case that names people (hop fifty-seven): n people, each with one device, all in one group; the first device is made by the reset, and each after it here, and the first is the current one after\nfn __people(n: i64)\n    most: u1 = cmp.le n, {people}\n    check most\n    loop(k: i64 = 1) bound {people}\n        more: u1 = cmp.lt k, n\n        if more\n            k32: i32 = conv k\n            __zero_context(k32)\n            __zero_new()\n            k2: i64 = add k, 1\n            continue k2\n        break\n    z: i32 = const 0\n    __zero_context(z)\n    ret", people = PEOPLE).unwrap();
+        // ... and each one's output, gathered into the first's capture
+        writeln!(t, "\n; after a case that names people (hop fifty-seven): what each device after the first wrote, and when, put after the first's in its capture, a separator byte (30) before each, whose word in the marks is the end of the part before it; the runner cuts them apart\nfn __gather()\n    sp: ptr = addr __share\n    n: i64 = load sp\n    cm: ptr(array(__ctx, {people})) = addr __ctx_mem\n    z: index = const 0\n    e0: ptr(__ctx) = index cm, z\n    q0: ptr = cast e0\n    c0: __ctx = load q0\n    n0: index = get c0, __out_n\n    p0: ptr = get c0, __out_p\n    m0: ptr = get c0, __out_m\n    w0: i64 = conv n0\n    store w0, sp, 16\n    loop(k: i64 = 1) bound {people}\n        more: u1 = cmp.lt k, n\n        if more\n            ki: index = conv k\n            ek: ptr(__ctx) = index cm, ki\n            qk: ptr = cast ek\n            ck: __ctx = load qk\n            nk: index = get ck, __out_n\n            pk: ptr = get ck, __out_p\n            mk: ptr = get ck, __out_m\n            aw: i64 = load sp, 16\n            at: index = conv aw\n            sep: u8 = const 30\n            store sep, p0, at, 1\n            b0: index = add at, 1\n            loop(i: index = 0) bound 65536\n                w: i64 = load mk, i, 8\n                j: index = add b0, i\n                store w, m0, j, 8\n                done: u1 = cmp.ge i, nk\n                if done\n                    break\n                ch: u8 = load pk, i, 1\n                store ch, p0, j, 1\n                i2: index = add i, 1\n                continue i2\n            a2: index = add b0, nk\n            a2w: i64 = conv a2\n            store a2w, sp, 16\n            k2: i64 = add k, 1\n            continue k2\n        break\n    fw: i64 = load sp, 16\n    fi: index = conv fw\n    c1: __ctx = load q0\n    c2: __ctx = set c1, __out_n, fi\n    store c2, q0\n    ret", people = PEOPLE).unwrap();
+        self.out.push_str(&t);
+        for (f, _, _) in self.shared_fields.clone() {
+            self.written.insert(f);
+        }
+    }
+
     fn fvar(&self, name: &str) -> Option<&FVar> {
         self.fvars.iter().find(|f| f.name == name)
+    }
+
+    /// the scope word of a feature-scope stream that is a user's, a
+    /// group's or everyone's (hop fifty-seven); None for the device's own
+    fn shared_word(&self, name: &str) -> Option<&str> {
+        self.fvar(name).map(|f| f.scope.as_str()).filter(|w| matches!(*w, "user" | "group" | "global") && !name.starts_with("__"))
     }
 
     /// Nothing at feature scope is assigned (fm3 question 70, log 145):
@@ -8335,7 +8536,9 @@ impl Lowerer {
                 let rated = store.features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Var(v) if v.name == s && v.rate.is_some())));
                 let sty = self.fvar(&s).map(|f| f.ty.clone());
                 let method = self.funcs.iter().any(|g| matches!(g.parts.as_slice(), [NamePart::Group, NamePart::Sym(op), NamePart::Group] if op == "<<") && sty.as_ref().is_some_and(|t| g.params.first().is_some_and(|p| fits(t, &p.1))));
-                let may = streams.contains(&s) && !writes.iter().any(|w| w.contains(&s)) && !(rated && method);
+                // (a shared stream's readers stand in every device's
+                // context, and the pass runs them there, hop fifty-seven)
+                let may = streams.contains(&s) && !writes.iter().any(|w| w.contains(&s)) && !(rated && method) && self.shared_word(&s).is_none();
                 let (mut wakes, mut rest) = (Vec::new(), Vec::new());
                 for k in self.reached(&s, &self.nodes, order, writes) {
                     let node = &self.nodes[k];
@@ -8384,6 +8587,14 @@ impl Lowerer {
             for (a, (pname, pty)) in node.args.iter().zip(&node.info.params) {
                 if let (ExprKind::Seq(_), Ty::Stream(_)) = (&a.kind, pty) {
                     let ty = if self.placed.contains(&k) { Ty::Num("index".into()) } else { pty.clone() };
+                    // a reader of a shared stream starts where the
+                    // group's stream starts (hop fifty-seven)
+                    if let (true, ExprKind::Seq(n)) = (self.shared, &a.kind) {
+                        if self.shared_word(n).is_some() {
+                            let sty = self.fvar(n).map(|f| self.field_ty(f).ir()).unwrap_or_default();
+                            self.shared_readers.push(format!("__node{}_{} {} {} {}", k + 1, pname, n, if self.placed.contains(&k) { "pos" } else { "whole" }, sty));
+                        }
+                    }
                     fields.push((format!("__node{}_{}", k + 1, pname), ty));
                     // how many items the ring had when the node last ran
                     if !woken.contains(&k) {
@@ -8395,7 +8606,7 @@ impl Lowerer {
                 fields.push((format!("__node{}_fin", k + 1), Ty::Bool));
             }
             for (name, ty) in fields {
-                self.fvars.push(FVar { name, ty, scope: "node".into(), merge: "last".into(), feature: node.feature.clone(), arr: false, rule: None, count: None });
+                self.fvars.push(FVar { name, ty, scope: "node".into(), feature: node.feature.clone(), arr: false, rule: None, count: None });
             }
         }
         // every dynamic feature's implicit `enabled` (section 5, log 28),
@@ -8405,7 +8616,7 @@ impl Lowerer {
             if self.statics.contains(f) {
                 continue;
             }
-            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false, rule: None, count: None });
+            self.fvars.insert(at, FVar { name: format!("__enabled_{}", f), ty: Ty::Bool, scope: "user".into(), feature: f.clone(), arr: false, rule: None, count: None });
             at += 1;
         }
         // ... and, after the switches, the effective state of each one
@@ -8414,13 +8625,13 @@ impl Lowerer {
         // is one field at any depth (fm3 question 72, log 138)
         let nested: Vec<String> = self.features.iter().filter(|f| !self.statics.contains(*f) && self.dynamic_ancestor(f).is_some()).cloned().collect();
         for f in &nested {
-            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), merge: "last".into(), feature: f.clone(), arr: false, rule: None, count: None });
+            self.fvars.insert(at, FVar { name: format!("__on_{}", f), ty: Ty::Bool, scope: "user".into(), feature: f.clone(), arr: false, rule: None, count: None });
             at += 1;
         }
         if !self.fvars.is_empty() {
             let mut fields = Vec::new();
             self.type_lines.push(String::new());
-            self.type_lines.push("; the context: one field per feature-scope variable — name: scope, merge (feature)".into());
+            self.type_lines.push("; the context: one field per feature-scope variable — name: scope (feature)".into());
             for f in &self.fvars {
                 // the device is declared and has no storage (question 45)
                 if self.device_var(f) {
@@ -8428,8 +8639,17 @@ impl Lowerer {
                     continue;
                 }
                 // ... and so is a stream no word reads (question 50)
+                // a stream that is a user's, a group's or everyone's (hop
+                // fifty-seven): it lives in their state, and the device
+                // holds a copy while it is the current one
+                let copy = if self.shared && matches!(f.scope.as_str(), "user" | "group" | "global") && !f.name.starts_with("__") && (self.nowed.contains(&f.name) || !self.bare.contains(&f.name)) {
+                    self.shared_fields.push((f.name.clone(), f.scope.clone(), self.field_ty(f).ir()));
+                    format!(", lives in {}, of which this device holds a copy while it is the current one", match f.scope.as_str() { "user" => "its user's state, `__user_mem`", "group" => "its group's, `__group_mem`", _ => "the global state, `__global_mem`" })
+                } else {
+                    String::new()
+                };
                 if self.nowed.contains(&f.name) {
-                    self.type_lines.push(format!(";   {}: {}, {} ({}), no queue: its latest item is kept, one word, stored where a push into it calls its edges", f.name, f.scope, f.merge, f.feature));
+                    self.type_lines.push(format!(";   {}: {} ({}), no queue: its latest item is kept, one word, stored where a push into it calls its edges{}", f.name, f.scope, f.feature, copy));
                     fields.push(format!("{}: {}", f.name, self.field_ty(f).ir()));
                     continue;
                 }
@@ -8444,9 +8664,9 @@ impl Lowerer {
                     continue;
                 }
                 if self.cells.contains(&f.name) {
-                    self.type_lines.push(format!(";   {}: {}, {} ({}), a stream of which one value is kept, its latest", f.name, f.scope, f.merge, f.feature));
+                    self.type_lines.push(format!(";   {}: {} ({}), a stream of which one value is kept, its latest{}", f.name, f.scope, f.feature, copy));
                 } else {
-                    self.type_lines.push(format!(";   {}: {}, {} ({})", f.name, f.scope, f.merge, f.feature));
+                    self.type_lines.push(format!(";   {}: {} ({}){}", f.name, f.scope, f.feature, copy));
                 }
                 fields.push(format!("{}: {}", f.name, self.field_ty(f).ir()));
             }
@@ -8459,6 +8679,10 @@ impl Lowerer {
             // stream some `restart` names, its phase and its run's
             // number; and the bit that says an activity has been ended
             let mut own = String::new();
+            if self.shared {
+                self.type_lines.push(format!(";   __user, __group: whose this device is (hop fifty-seven): the user and the group its context has, each a place in `__user_mem` and `__group_mem`, set from outside before a case as a feature's switch is; the store has memory for {} devices, {} users, one group and the one global", PEOPLE, PEOPLE));
+                own.push_str("__user: index\n    __group: index\n    ");
+            }
             if self.moved {
                 self.type_lines.push(";   __due_move, __move_k: the cut's moves (fm3 cut.md, log 265): the time the next is due, and which that is".into());
                 own.push_str("__due_move: i64\n    __move_k: index\n    ");
@@ -8500,11 +8724,29 @@ impl Lowerer {
             // memory for two contexts: the runner's, and a second, so
             // that one store can be run in two (fm3 log 137); the code
             // is the same for any number
-            self.data.push("data __ctx_mem: array(__ctx, 2)".into());
+            if self.shared {
+                // a store built for people (hop fifty-seven): memory for
+                // so many devices, and the state of their users, their
+                // group and everyone's, a struct of each kind that has
+                // a stream; `__share` is how many devices are made since
+                // the reset and which is the current one
+                self.data.push(format!("data __ctx_mem: array(__ctx, {})", PEOPLE));
+                self.data.push("data __share: array(i64, 4)".into());
+                for (kind, n) in [("user", PEOPLE), ("group", 1), ("global", 1)] {
+                    let mine: Vec<String> = self.shared_fields.iter().filter(|(_, w, _)| w == kind).map(|(f, _, t)| format!("{}: {}", f, t)).collect();
+                    if !mine.is_empty() {
+                        self.type_lines.push(format!("; a {}'s streams (hop fifty-seven): where they live; a device holds a copy while it is the current one\ntype __{} = struct\n    {}", kind, kind, mine.join("\n    ")));
+                        self.data.push(format!("data __{}_mem: array(__{}, {})", kind, kind, n));
+                    }
+                }
+            } else {
+                self.data.push("data __ctx_mem: array(__ctx, 2)".into());
+            }
             fresh = Some(b.out.len());
             // which of the store's two contexts this is, and so which
             // half of the capture and of the marks is its own
-            for l in ["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second", "ob: ptr(array(u8, 131072)) = addr __out", "oi: index = mul sw, 65536", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"] {
+            let which: &[&str] = if self.shared { &["cx: ptr = context()", "ks: ptr = addr __share", "kw: i64 = load ks, 8", "sw: index = conv kw"] } else { &["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second"] };
+            for l in which.iter().chain(["ob: ptr(array(u8, 131072)) = addr __out", "oi: index = mul sw, 65536", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"].iter()) {
                 b.line(l);
             }
             // the marks of the context's last case go with its text,
@@ -8672,6 +8914,9 @@ impl Lowerer {
             }
             let c = b.tmp();
             let mut own = String::new();
+            if self.shared {
+                own.push_str("sw, 0, ");
+            }
             if self.moved {
                 own.push_str(&format!("{}, 0, ", NEVER));
             }
@@ -8702,6 +8947,62 @@ impl Lowerer {
             b.line(&format!("{}: __ctx = pack 0, 0, op, {}{}{}", c, own, inits.join(", "), MARKS_INIT));
             b.line("p: ptr = context()");
             b.line(&format!("store {}, p", c));
+            if self.shared {
+                // whose this device is (hop fifty-seven): user k of
+                // device k, the one group. The first device made makes
+                // its group's streams and everyone's; a device made
+                // after it takes theirs, and its readers of them start
+                // where they start. A user's streams are made with its
+                // one device
+                let wide = self.shared_fields.iter().any(|(_, w, _)| w != "user");
+                let user = self.shared_fields.iter().any(|(_, w, _)| w == "user");
+                b.line("first: u1 = cmp.eq kw, 0");
+                b.line("if first");
+                b.line(&format!("    __share_out({}, 1)", user as u8));
+                b.line("else");
+                b.line(&format!("    __share_out({}, 0)", user as u8));
+                if wide {
+                    b.line("    __share_in(0, 1)");
+                    if !self.shared_readers.is_empty() {
+                        b.line("    sr: __ctx = load p");
+                        let mut cur = "sr".to_string();
+                        for (i, l) in self.shared_readers.clone().iter().enumerate() {
+                            // each line is `<field> <stream> <pos>`
+                            let w: Vec<&str> = l.split(' ').collect();
+                            let v = format!("sv{}", i);
+                            b.line(&format!("    {}: {} = get sr, {}", v, w[3], w[1]));
+                            let v = if w[2] == "pos" {
+                                b.line(&format!("    sq{}: index = get {}, pos", i, v));
+                                format!("sq{}", i)
+                            } else {
+                                v
+                            };
+                            b.line(&format!("    sn{}: __ctx = set {}, {}, {}", i, cur, w[0], v));
+                            cur = format!("sn{}", i);
+                        }
+                        b.line(&format!("    store {}, p", cur));
+                    }
+                }
+                // a clock that pushes into a shared stream runs at the
+                // group's first device and no other (fm3 places.md,
+                // "whose is not where": a push into a shared stream is
+                // worked out where the group's streams are; at one place
+                // that is the first device's turn)
+                let homed: Vec<String> = self.clocks.iter().filter(|c| self.shared_word(&c.stream).is_some_and(|w| w != "user")).map(|c| c.due.clone()).collect();
+                if !homed.is_empty() {
+                    b.line("    ch: __ctx = load p");
+                    let mut cur = "ch".to_string();
+                    for (i, due) in homed.iter().enumerate() {
+                        b.line(&format!("    cn{}: __ctx = set {}, {}, {}", i, cur, due, NEVER));
+                        cur = format!("cn{}", i);
+                    }
+                    b.line(&format!("    store {}, p", cur));
+                }
+                b.line("sn: i64 = load ks");
+                b.line("kn: i64 = add kw, 1");
+                b.line("sm: i64 = max(sn, kn)");
+                b.line("store sm, ks");
+            }
         }
         b.line("ret");
         // the reset is the store's and then the current context's (fm3
@@ -8710,6 +9011,16 @@ impl Lowerer {
         // beside the first; `__zero_context` is the runner's, the k-th
         // of the store's contexts made the current one
         match fresh {
+            Some(at) if self.shared => {
+                writeln!(self.out, "\n; before every case: the arena emptied, no device made, and the current context made new").unwrap();
+                writeln!(self.out, "fn __zero_reset()").unwrap();
+                self.out.push_str(&b.out[..at]);
+                self.out.push_str("    zs: ptr = addr __share\n    store 0: i64, zs\n    __zero_new()\n    ret\n");
+                writeln!(self.out, "\n; the current context at its first values, its streams made in the arena, and whose it is").unwrap();
+                writeln!(self.out, "fn __zero_new()").unwrap();
+                self.out.push_str(&b.out[at..]);
+                self.emit_people();
+            }
             Some(at) => {
                 writeln!(self.out, "\n; before every case: the arena emptied, and the current context made new").unwrap();
                 writeln!(self.out, "fn __zero_reset()").unwrap();
@@ -8993,6 +9304,76 @@ impl Lowerer {
         self.lines.iter().filter(|l| l.pacers.len() > 1 && l.pacers.iter().all(|p| self.rates.contains_key(p))).map(|l| l.name.clone()).collect()
     }
 
+    /// The things going on in a store built for people (hop
+    /// fifty-seven): every device has its own list, and they are taken
+    /// in one time order. `__soon_here(t)` is the time of the current
+    /// device's earliest turn due by `t`, or never; `__turn_here()`
+    /// takes it; and
+    /// `__turns(t)` takes, until none is due by `t`, the earliest of
+    /// any device, the first named of two due at one time. After each
+    /// turn every other device's standing lines run at its time, so a
+    /// push into a shared stream reaches every device's lines wired to
+    /// it, in the order the case names the people: the device whose
+    /// turn it was has run its own already. Written from the one list's
+    /// loop, `one`, with the loop taken off
+    fn people_turns(&self, one: &str) -> String {
+        let body: Vec<&str> = one.lines().skip_while(|l| !l.starts_with("        x: __ctx = load")).take_while(|l| !l.starts_with("        n2: i64 = add n, 1")).collect();
+        let late = body.iter().position(|l| l.starts_with("        late: u1 = cmp.gt ")).unwrap();
+        let best = body[late].trim().strip_prefix("late: u1 = cmp.gt ").unwrap().strip_suffix(", t").unwrap().to_string();
+        let dedent = |l: &&str| l.strip_prefix("    ").unwrap_or(l).to_string();
+        let mut due = String::from("\n; (hop fifty-seven) when this device's earliest turn due by t is, or never\nfn __soon_here(t: i64) -> i64\n");
+        for l in &body[..late] {
+            due.push_str(&dedent(l));
+            due.push('\n');
+        }
+        // (a close held for a later time is not due by this one)
+        let rest = &body[late + 3..];
+        let wait = rest.iter().position(|l| l.trim_start().starts_with("__wait(")).unwrap_or(0);
+        let mut held = "late".to_string();
+        writeln!(due, "    late: u1 = cmp.gt {}, t", best).unwrap();
+        if let Some(h) = rest[..wait].iter().position(|l| l.trim_start().starts_with("hold: u1 = ")) {
+            for l in &rest[..=h] {
+                due.push_str(&dedent(l));
+                due.push('\n');
+            }
+            due.push_str("    off: u1 = or late, hold\n");
+            held = "off".into();
+        }
+        writeln!(due, "    never: i64 = const {}\n    d: i64 = if {}\n        yield never\n    else\n        yield {}\n    ret d", NEVER, held, best).unwrap();
+        let mut step = String::from("\n; (hop fifty-seven) this device's earliest turn, which the caller knows is due\nfn __turn_here()\n");
+        for l in body[..late].iter().chain(&rest[wait..]) {
+            step.push_str(&dedent(l));
+            step.push('\n');
+        }
+        step.push_str("    ret\n");
+        let run = self.out.contains("\nfn __run()");
+        // a line at the close of a slot that only shared streams set
+        // off is set off on every device by a push into one of them:
+        // its bit and the close's time go to each other device as the
+        // device whose turn it was has them (hop fifty-seven)
+        let spread: Vec<String> = self.slot_lines().into_iter().filter(|n| self.lines.iter().find(|l| &l.name == n).is_some_and(|l| l.pacers.iter().all(|p| self.shared_word(p).is_some_and(|w| w != "user")))).collect();
+        let mut carry = String::new();
+        if !spread.is_empty() {
+            carry.push_str("        cb: ptr = context()\n        cx: __ctx = load cb\n        cdc: i64 = get cx, __due_close\n");
+            for (i, n) in spread.iter().enumerate() {
+                writeln!(carry, "        cs{}: u1 = get cx, __slot_{}", i, n).unwrap();
+            }
+            carry.push_str(&format!("        loop(g: i64 = 0) bound {p}\n            gm: u1 = cmp.lt g, m\n            if gm\n                go: u1 = cmp.ne g, bk\n                if go\n                    g32: i32 = conv g\n                    __zero_context(g32)\n                    gb: ptr = context()\n                    gx: __ctx = load gb\n                    gd: i64 = get gx, __due_close\n                    gdm: i64 = min(gd, cdc)\n                    gx0: __ctx = set gx, __due_close, gdm\n", p = PEOPLE));
+            let mut cur = "gx0".to_string();
+            for (i, n) in spread.iter().enumerate() {
+                writeln!(carry, "                    gs{i}: u1 = get gx, __slot_{n}\n                    go{i}: u1 = or gs{i}, cs{i}\n                    gx{j}: __ctx = set {cur}, __slot_{n}, go{i}", i = i, n = n, j = i + 1, cur = cur).unwrap();
+                cur = format!("gx{}", i + 1);
+            }
+            carry.push_str(&format!("                    store {}, gb\n                g2: i64 = add g, 1\n                continue g2\n            break\n", cur));
+        }
+        let others = if run {
+            format!("        loop(j: i64 = 0) bound {p}\n            jm: u1 = cmp.lt j, m\n            if jm\n                jo: u1 = cmp.ne j, bk\n                if jo\n                    j32: i32 = conv j\n                    __zero_context(j32)\n                    __wait(d)\n                    __run()\n                j2: i64 = add j, 1\n                continue j2\n            break\n        loop(h: i64 = 0) bound {p}\n            hm: u1 = cmp.lt h, m\n            if hm\n                h32: i32 = conv h\n                __zero_context(h32)\n                __run()\n                h2: i64 = add h, 1\n                continue h2\n            break\n", p = PEOPLE)
+        } else {
+            String::new()
+        };
+        format!("\n; the things going on (fm3 log 217), a list for every device (hop fifty-seven): the earliest due by t of any device has its turn at its time, the first named of two at one time, and then every other device's standing lines run at that time, until none is due\nfn __turns(t: i64)\n    sp: ptr = addr __share\n    k0: i64 = load sp, 8\n    m: i64 = load sp\n    loop(n: i64 = 0)\n        some: u1 = cmp.lt n, {turns}\n        check some\n        never: i64 = const {never}\n        store never, sp, 16\n        store -1: i64, sp, 24\n        loop(k: i64 = 0) bound {p}\n            km: u1 = cmp.lt k, m\n            if km\n                k32: i32 = conv k\n                __zero_context(k32)\n                dk: i64 = __soon_here(t)\n                bd: i64 = load sp, 16\n                sooner: u1 = cmp.lt dk, bd\n                if sooner\n                    store dk, sp, 16\n                    store k, sp, 24\n                k2: i64 = add k, 1\n                continue k2\n            break\n        bk: i64 = load sp, 24\n        none: u1 = cmp.lt bk, 0\n        if none\n            break\n        d: i64 = load sp, 16\n        b32: i32 = conv bk\n        __zero_context(b32)\n        __turn_here()\n{carry}{others}        n2: i64 = add n, 1\n        continue n2\n    r32: i32 = conv k0\n    __zero_context(r32)\n    ret\n{due}{step}", turns = TURNS, never = NEVER, p = PEOPLE, carry = carry, others = others, due = due, step = step)
+    }
+
     fn emit_turns(&mut self) {
         if !self.listed() {
             return;
@@ -9087,6 +9468,9 @@ impl Lowerer {
                 }
             }
             t.push_str("        n2: i64 = add n, 1\n        continue n2\n    ret\n");
+            if self.shared {
+                t = self.people_turns(&t);
+            }
             if self.moved {
                 // (the placed build's rewrite writes its body, `places.rs`,
                 // which knows the table)
@@ -10308,8 +10692,8 @@ impl Lowerer {
         let mut carried = Vec::new();
         let mut tys = Vec::new();
         for v in vars {
-            if !v.scope.is_empty() || v.merge.is_some() {
-                return Err(lex::error(&file, v.line, "a scope word or 'merge' belongs on a feature-scope variable"));
+            if !v.scope.is_empty() {
+                return Err(lex::error(&file, v.line, "a scope word is for a stream declared at feature scope, outside any function (fm3 places.md, question 149)"));
             }
             if b.vars.contains_key(&v.name) || carried.contains(&v.name) {
                 return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));
@@ -11093,8 +11477,8 @@ impl Lowerer {
                 Ok(false)
             }
             Stmt::Var(v) => {
-                if !v.scope.is_empty() || v.merge.is_some() {
-                    return Err(lex::error(&file, v.line, "a scope word or 'merge' belongs on a feature-scope variable"));
+                if !v.scope.is_empty() {
+                    return Err(lex::error(&file, v.line, "a scope word is for a stream declared at feature scope, outside any function (fm3 places.md, question 149)"));
                 }
                 if b.vars.contains_key(&v.name) {
                     return Err(lex::error(&file, v.line, format!("'{}' is already declared", v.name)));

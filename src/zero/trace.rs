@@ -459,7 +459,7 @@ pub fn trace(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Res
     let call = &p.call;
     let said = p.text.split('→').next().unwrap_or("").trim().to_string();
     let module = run::build(&l.ir, policy, level)?;
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: true, text: true, before: run::setters(&call.context, &call.input, &call.input_at), live: false, times: false };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: true, text: true, before: run::call_setters(&call.context, call), live: false, times: false };
     let (got, wrote) = suite::run_trace(&module, &sc)?;
     let (events, full) = read(&wrote.words, &wrote.bytes);
     // (what the diagnostic build adds to the output where a site was

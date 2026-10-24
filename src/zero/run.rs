@@ -281,9 +281,9 @@ fn held(s: &store::Store, cases: &[&Planned], module: &ssa::Module, l: &lower::L
                 nrets: p.call.nrets,
                 checks: checks(&p.call.expect),
                 text: true,
-                before: setters(&p.call.context, &p.call.input, &p.call.input_at),
+                before: call_setters(&p.call.context, &p.call),
                 live: false,
-                times: matches!(p.call.expect, store::Expect::Timed(_)),
+                times: timed_expect(&p.call.expect),
             })
             .collect();
         if calls.is_empty() {
@@ -364,6 +364,33 @@ pub fn setters(switches: &[(String, bool)], input: &[u8], input_at: &[(u8, i64)]
     // (fm3 log 220), to arrive when the program reaches it
     calls.extend(input_at.iter().map(|&(c, t)| ("__in_at".to_string(), vec![c as i64, t])));
     calls
+}
+
+/// ... and for a case that names people (hop fifty-seven): how many,
+/// `__people(n)`, and then on each device in the case's order, made the
+/// current one, the switches, which are everyone's, and that person's
+/// input; the first device current again after. A case that names
+/// nobody is `setters`' alone
+pub fn call_setters(switches: &[(String, bool)], c: &lower::Call) -> Vec<(String, Vec<i64>)> {
+    if c.people.is_empty() {
+        return setters(switches, &c.input, &c.input_at);
+    }
+    let mut calls = vec![("__people".to_string(), vec![c.people.len() as i64])];
+    for (k, (input, input_at)) in c.people.iter().enumerate() {
+        calls.push(("__zero_context".to_string(), vec![k as i64]));
+        calls.extend(setters(switches, input, input_at));
+    }
+    calls.push(("__zero_context".to_string(), vec![0]));
+    calls
+}
+
+/// does a case's result say when its text was written?
+fn timed_expect(e: &store::Expect) -> bool {
+    match e {
+        store::Expect::Timed(_) => true,
+        store::Expect::People(each) => each.iter().any(|(_, e)| timed_expect(e)),
+        _ => false,
+    }
 }
 
 /// a case overridden in one context: the case with the runner's label,
@@ -460,7 +487,7 @@ fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), St
         }
         // a case's input is part of its call (log 62): two lines
         // with different inputs are two promises
-        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args && cases[runs[j].case].call.input == cases[runs[i].case].call.input && cases[runs[j].case].call.input_at == cases[runs[i].case].call.input_at).collect();
+        let same: Vec<usize> = (0..runs.len()).filter(|&j| standing[j] && runs[j].off == runs[i].off && cases[runs[j].case].feature == cases[runs[i].case].feature && cases[runs[j].case].call.func == cases[runs[i].case].call.func && cases[runs[j].case].call.args == cases[runs[i].case].call.args && cases[runs[j].case].call.input == cases[runs[i].case].call.input && cases[runs[j].case].call.input_at == cases[runs[i].case].call.input_at && cases[runs[j].case].call.people == cases[runs[i].case].call.people).collect();
         if same.len() < 2 {
             continue;
         }
@@ -608,13 +635,13 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     }
     // the real clock leaves no marks (fm3 log 91): the times were
     // watched; on the virtual one a timed case is shown with them
-    let timed = fast && matches!(call.expect, store::Expect::Timed(_));
+    let timed = fast && timed_expect(&call.expect);
     {
         use std::io::Write;
         println!("{}", text.split('→').next().unwrap_or("").trim());
         let _ = std::io::stdout().flush();
     }
-    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: cut.into_iter().chain(setters(&call.context, &call.input, &call.input_at)).collect(), live: true, times: timed };
+    let sc = suite::Call { func: call.func.clone(), args: call.args.clone(), nrets: call.nrets, checks: checks(&call.expect), text: true, before: cut.into_iter().chain(call_setters(&call.context, call)).collect(), live: call.people.is_empty(), times: timed };
     // a check that fails is traced to its line by the diagnostic build
     // (fm3 log 199): a person is looking
     let got = match suite::run_calls(&module, &l.ir, Backend::Native, std::slice::from_ref(&sc), "zero-run", level)?.remove(0) {
@@ -625,6 +652,12 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     let mut out = String::new();
     if !got.text.is_empty() && !got.text.ends_with('\n') {
         out.push('\n');
+    }
+    // (each person's, where the case names people, hop fifty-seven)
+    if let store::Expect::People(each) = &call.expect {
+        let parts = people_got(&got, each.len());
+        let said: Vec<String> = each.iter().zip(&parts).map(|((name, _), g)| format!("{} {}", name, if timed { store::spell_timed(&pieces(g)) } else { format!("{:?}", g.text.strip_suffix('\n').unwrap_or(&g.text)) })).collect();
+        return Ok(format!("→ {}\n", said.join("; ")));
     }
     let shown = match call.expect {
         store::Expect::Timed(_) if timed => store::spell_timed(&pieces(&got)),
@@ -1408,9 +1441,9 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     checks: checks(&c.expect),
                     // every case reads the text back: a failed check names its site there
                     text: true,
-                    before: setters(&r.switches, &c.input, &c.input_at),
+                    before: call_setters(&r.switches, c),
                     live: false,
-                    times: matches!(c.expect, store::Expect::Timed(_)),
+                    times: timed_expect(&c.expect),
                 }
             })
             .collect();
@@ -2326,6 +2359,22 @@ fn traced(dir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, call
 /// `print "hi"`
 fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, String) {
     match (expect, got) {
+        // each person's device's output, in the order the case names
+        // them (hop fifty-seven): the text cut at the gathering's
+        // separators, and each part judged as a case's result is
+        (store::Expect::People(each), Ok(g)) => {
+            let parts = people_got(&g, each.len());
+            let mut ok = true;
+            let mut notes = Vec::new();
+            for ((name, want), got) in each.iter().zip(parts) {
+                let (one, note) = judge(want, Ok(got));
+                ok &= one;
+                if !one {
+                    notes.push(format!("{} {}", name, note.trim_start_matches('(').trim_end_matches(')')));
+                }
+            }
+            (ok, if notes.is_empty() { String::new() } else { format!("({})", notes.join("; ")) })
+        }
         (store::Expect::Check, Err(e)) if e.starts_with(suite::checked()) || e.starts_with("trap:") => (true, e.strip_prefix(suite::checked()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| format!("({})", s)).unwrap_or_default()),
         (store::Expect::Check, Err(e)) => (false, format!("({})", e)),
         (store::Expect::Check | store::Expect::CheckAt(_), Ok(g)) => (false, format!("(no check failed; got {})", show(&g.values))),
@@ -2373,6 +2422,31 @@ fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, Stri
             }
         }
     }
+}
+
+/// The byte that stands between two people's output where a case's
+/// twin gathers them into the first context's capture (hop
+/// fifty-seven, `lower.rs`'s `__gather`): ASCII's record separator,
+/// which no program in the suite writes
+pub const PERSON_SEP: u8 = 0x1e;
+
+/// what each person's device wrote, from the first context's capture
+/// after the gathering: the text cut at each separator, and the marks
+/// with it, a word for each byte and one for the end of each part (the
+/// separator's own word is the end of the part before it). A person
+/// the gathering never reached has written nothing
+fn people_got(g: &suite::Got, n: usize) -> Vec<suite::Got> {
+    let bytes = g.text.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0;
+    for k in 0..n {
+        let to = bytes[from.min(bytes.len())..].iter().position(|&b| b == PERSON_SEP).map(|i| from + i).unwrap_or(bytes.len()).max(from);
+        let text = if from <= bytes.len() { String::from_utf8_lossy(&bytes[from.min(bytes.len())..to.min(bytes.len())]).to_string() } else { String::new() };
+        let marks = if g.marks.is_empty() { Vec::new() } else { (from..=to).map(|i| g.marks.get(i).copied().unwrap_or(0)).collect() };
+        out.push(suite::Got { values: if k == 0 { g.values.clone() } else { Vec::new() }, text, marks });
+        from = to + 1;
+    }
+    out
 }
 
 /// What a call wrote, cut at its marks (fm3 log 91, 95): there is a word
@@ -2544,7 +2618,7 @@ mod tests {
         assert_eq!(setters(&[("more".to_string(), false), ("base".to_string(), false), ("base".to_string(), true)], b"", &[]), [("__set___enabled_more".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![0]), ("__set___enabled_base".to_string(), vec![1])]);
         // a case does not stand where its feature is effectively off; a
         // line is a sequence of switches, `on` restoring a flag
-        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, times: vec![false, false], expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![], input_at: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
+        let sequence = Planned { text: String::new(), call: lower::Call { func: "switches".into(), args: vec![], nrets: 2, times: vec![false, false], expect: store::Expect::Values(vec![0, 1]), context: vec![("more".into(), false), ("base".into(), false), ("base".into(), true)], input: vec![], input_at: vec![], people: vec![] }, feature: "most".into(), rank: 3, file: "most.md".into(), line: 1 };
         assert!(effective(&s, &["base".to_string()].into_iter().collect(), &sequence).is_none());
         assert_eq!(effective(&s, &["tool".to_string()].into_iter().collect(), &sequence).unwrap().iter().cloned().collect::<Vec<_>>(), ["more", "tool"]);
         // a gate reads one field, the feature's effective state, in line
@@ -3600,8 +3674,21 @@ mod tests {
             assert_eq!(p.refused(&p.named(server).unwrap()), None, "{}", server);
         }
         // a string kept as a stream's latest value, written at one
-        // place and read at the other, is copied by the wire
-        let variables = placed("variables");
+        // place and read at the other, is copied by the wire. (The
+        // suite's `variables` with no scope words: a store that names
+        // one is not yet built for a wire, hop fifty-seven)
+        let unworded = std::env::temp_dir().join(format!("probe-zero-unworded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&unworded);
+        std::fs::create_dir_all(unworded.join("variables")).unwrap();
+        let from = Path::new("suite/zero/variables/variables");
+        std::fs::copy(from.join("variables.md"), unworded.join("variables/variables.md")).unwrap();
+        let code: String = std::fs::read_to_string(from.join("variables.zero")).unwrap().lines().map(|l| format!("{}\n", l.strip_prefix("global ").or_else(|| l.strip_prefix("group ")).unwrap_or(l))).collect();
+        std::fs::write(unworded.join("variables/variables.zero"), code).unwrap();
+        let variables = {
+            let mut s = store::read(&unworded).unwrap();
+            s.places = true;
+            lower::lower(&s).unwrap()
+        };
         let p = variables.placed.as_ref().unwrap();
         assert_eq!(p.refused(&p.named("tool opened").unwrap()), None);
         assert!(variables.ir.contains(": u8$ = __copied_u8(a"), "{}", variables.ir);
@@ -3612,18 +3699,20 @@ mod tests {
         assert!(why.contains("'how many so far' is handed, or gives, a stream, which is an address"), "{}", why);
         // a store that hands no value across has none of it
         assert!(!placed("hello").ir.contains("__copied_") && !placed("hello").ir.contains("__carried_"));
-        let names = ["arrays", "sequences", "pushed", "functions", "strings", "sampled", "sampled-kept", "sampled-between", "variables"];
+        let names = ["arrays", "sequences", "pushed", "functions", "strings", "sampled", "sampled-kept", "sampled-between"];
+        let dirs: Vec<std::path::PathBuf> = names.iter().map(|n| Path::new("suite/zero").join(n)).chain(std::iter::once(unworded.clone())).collect();
         let (mut report, mut cuts) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
-        for name in names {
-            test_cuts(&Path::new("suite/zero").join(name), &native, Backend::Native, opt::MAX_LEVEL, &mut report, &mut cuts);
+        for d in &dirs {
+            test_cuts(d, &native, Backend::Native, opt::MAX_LEVEL, &mut report, &mut cuts);
         }
         assert_eq!((cuts.hold, cuts.stores, cuts.refused, cuts.failed, cuts.unplaced), (9, 9, 0, 0, 0), "{}", report.log);
         let wasm = suite::backend_policy(Backend::Wasm).unwrap();
         let (mut report, mut there) = (Report { passed: 0, failed: 0, skipped: 0, log: String::new() }, Cuts::default());
-        for name in names {
-            test_cuts(&Path::new("suite/zero").join(name), &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
+        for d in &dirs {
+            test_cuts(d, &wasm, Backend::Wasm, opt::MAX_LEVEL, &mut report, &mut there);
         }
         assert_eq!((there.hold, there.refused, there.failed, there.cuts, there.passed), (9, 0, 0, cuts.cuts, cuts.passed), "{}", report.log);
+        let _ = std::fs::remove_dir_all(&unworded);
     }
 
     #[test]
@@ -5562,7 +5651,7 @@ mod tests {
         // `gate$` is read by a line's condition, `open$` by name
         assert!(!ir.contains("__queue_int") && !ir.contains("latest_queue"), "{}", ir);
         assert!(ir.contains("    up: int\n    gate: int\n    open: int\n"), "{}", ir);
-        assert!(ir.contains(";   up: user, last (h), no queue: its latest item is kept, one word, stored where a push into it calls its edges"), "{}", ir);
+        assert!(ir.contains(";   up: device (h), no queue: its latest item is kept, one word, stored where a push into it calls its edges"), "{}", ir);
         // the store comes before the calls
         assert!(ir.contains("    _7: __ctx = set _6, up, _5\n    store _7, _this\n    if _2\n        __edge1(_5)\n    if _2\n        __edge2(_5)\n"), "{}", ir);
         // its own name on the right of its own push is the field
@@ -5844,14 +5933,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("h")).unwrap();
         std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-09-08T10:00:00\n\n## testing\n>f (3) → 1\n").unwrap();
-        let head = "type Vec =\n    float x, y = 0\n\ngroup int quota = 100 merge sum\nVec origin(1, 2)\nint size\nstring name$ << \"zero\"\n\non (int a, int b) << two()\n    a << 1\n    b << 2\n\n";
+        let head = "type Vec =\n    float x, y = 0\n\ngroup int quota = 100\nVec origin(1, 2)\nint size\nstring name$ << \"zero\"\n\non (int a, int b) << two()\n    a << 1\n    b << 2\n\n";
         let with = |body: &str| -> Result<String, String> {
             std::fs::write(dir.join("h/h.zero"), format!("{}on (int n) << f (int k)\n{}\n", head, body)).unwrap();
             emit(&dir)
         };
         let how = "is a variable, and a variable keeps the value it was declared with (fm3 question 70): what changes is a stream. Declare it";
         for (body, said) in [
-            ("    quota = k\n    n << quota", format!("h.zero:14: 'quota' {} `group int quota$ << 100 merge sum` and push its next value, `quota$ << k`; its name, `quota$`, is then its latest item wherever one value is wanted", how)),
+            ("    quota = k\n    n << quota", format!("h.zero:14: 'quota' {} `group int quota$ << 100` and push its next value, `quota$ << k`; its name, `quota$`, is then its latest item wherever one value is wanted", how)),
             ("    origin = Vec(3, 4)\n    n << k", format!("h.zero:14: 'origin' {} `Vec origin$ << Vec(1, 2)` and push its next value, `origin$ << Vec (3, 4)`; its name, `origin$`, is then its latest item wherever one value is wanted", how)),
             ("    size = size + k\n    n << size", format!("h.zero:14: 'size' {} `int size$` and push its next value, `size$ << ...`; its name, `size$`, is then its latest item wherever one value is wanted", how)),
             ("    size, quota = two()\n    n << size", format!("h.zero:14: 'size' {} `int size$` and push its next value, `size$ << ...`; its name, `size$`, is then its latest item wherever one value is wanted", how)),
@@ -7712,5 +7801,82 @@ mod tests {
         let fast = Wire { d: 100_000, speed: 100_000, ..Default::default() };
         let (_, shown, _, _) = wire_moved_case(two, "launch() with in \"k\" at 3.5 s, in \"k\" at 5.5 s", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), &[("all".to_string(), 3_600_000)], fast, 0, None).unwrap();
         assert!(shown.starts_with("\"10\\n9\\n8\\n7\\n\" at 1 hz, \"6\\n10\\n\" at 4 s, "), "a move arrives whole: {}", shown);
+    }
+
+    /// The scope words (fm3 places.md, question 149, ruled 24 October
+    /// 2026; hop fifty-seven): `user`, `group` and `global`, and none a
+    /// stream one person's on one device. `device`, `static` and
+    /// `merge` are refused showing the line to write, and so is a
+    /// scope word on a local or a parameter. A store that names none is
+    /// built as it was, with memory for two contexts; one that names
+    /// one has memory for four devices and the state its words name,
+    /// and no placed build yet
+    #[test]
+    fn a_scope_word_says_whose_a_stream_is() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-scopes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("h")).unwrap();
+        std::fs::write(dir.join("h/h.md"), "# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-24T10:00:00\n\n## testing\n").unwrap();
+        let f = |code: &str, places: bool| -> Result<String, String> {
+            std::fs::write(dir.join("h/h.zero"), code).unwrap();
+            let mut s = store::read(&dir).map_err(|e| e.to_string())?;
+            s.places = places;
+            Ok(lower::lower(&s).map_err(|e| e.to_string())?.ir)
+        };
+        let refused = |code: &str, what: &str| {
+            let e = f(code, false).err().unwrap_or_else(|| panic!("not refused: {}", code));
+            assert!(e.contains(what), "{}: {}", code, e);
+        };
+        let tail = "\non (int n) << f()\n    n << 1\n";
+        refused(&format!("device int x$ << 0\n{}", tail), "h.zero:1: `device int x$ << 0`: `device` says what no word says: a stream with no scope word is one person's on one device (fm3 places.md, question 149): write `int x$ << 0`");
+        refused(&format!("static int port = 8822\n{}", tail), "h.zero:1: `static int port = 8822`: `static` is `global`, everyone's (fm3 places.md, question 149): write `global int port = 8822`");
+        refused(&format!("int count$ << 0 merge sum\n{}", tail), "h.zero:1: `int count$ << 0 merge sum`: how two writes combine is what the line that pushes says (fm3 places.md, \"the line is the merge\"): `count$ << count$ + 1` is a sum, `size$ << s` the last write stands, `best$ << s if (s > best$)` the better of the two; write `int count$ << 0`");
+        refused("on (int n) << f()\n    group int k = 1\n    n << k\n", "h.zero:2: `group int k = 1`: a scope word is for a stream declared at feature scope, outside any function, and 'group' here is the function's own (fm3 places.md, question 149): write `int k = 1`");
+        refused("on (int n) << f (user int k)\n    n << k\n", "write `on (int n) << f (int k)`");
+        refused(&format!("user group int x$ << 0\n{}", tail), "a variable has one scope word: user, group or global");
+        // none named: as it was
+        let plain = f(&format!("int x$ << 0\n{}", tail), false).unwrap();
+        assert!(plain.contains("data __ctx_mem: array(__ctx, 2)\n") && !plain.contains("__share") && plain.contains(";   x: device (h)"), "{}", plain);
+        // named: memory for four devices, a struct of each kind named
+        let shared = f(&format!("int x$ << 0\nuser int u$ << 0\ngroup int g$ << 0\nglobal int port = 8822\n\non (int n) << f()\n    u$ << u$ + 1\n    g$ << g$ + 1\n    n << x$ + u$ + g$ + port\n"), false).unwrap();
+        for want in ["data __ctx_mem: array(__ctx, 4)\n", "data __user_mem: array(__user, 4)\n", "data __group_mem: array(__group, 1)\n", "data __global_mem: array(__global, 1)\n", "type __group = struct\n    g: int\n", "\nfn __people(n: i64)\n", "\nfn __gather()\n"] {
+            assert!(shared.contains(want), "{}: {}", want, shared);
+        }
+        // ... and no placed build yet
+        let e = f(&format!("group int g$ << 0\n{}", tail), true).err().unwrap();
+        assert!(e.contains("'g$' is a group's, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire"), "{}", e);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A case names people (fm3 places.md, "what a case says"; hop
+    /// fifty-seven): each one person with one device, all in one group.
+    /// A shared stream is one stream every device reaches, a push into
+    /// it runs every device's standing lines wired to it, and a stream
+    /// with no word stays each one's own. A case that names people and
+    /// gives a value is refused, and so is a name the line reads
+    /// otherwise
+    #[test]
+    fn a_case_names_people() {
+        let dir = std::env::temp_dir().join(format!("probe-zero-people-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("s/h")).unwrap();
+        let code = "int mine$ << 0\ngroup int all$ << 0\ngroup char said$\nsaid$ << in$ forever\nout$ << said$ forever\n\non count()\n    mine$ << mine$ + 1\n    all$ << all$ + 1\n    out$ << mine$ << \" of \" << all$\n";
+        std::fs::write(dir.join("s/h/h.zero"), code).unwrap();
+        let cases = ">count() → \"1 of 1\"\n>count() → ann \"1 of 1\"; bob \"1 of 2\"; cy \"1 of 3\"\n>count() with ann in \"hi\" at 1 s → ann \"1 of 1\" at 0 s, \"hi\" at 1 s; bob \"1 of 2\" at 0 s, \"hi\" at 1 s\n";
+        std::fs::write(dir.join("s/h/h.md"), format!("# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-24T10:00:00\n\n## testing\n{}", cases)).unwrap();
+        let report = test(&dir, Backend::Native, opt::MAX_LEVEL).unwrap();
+        assert_eq!((report.passed, report.failed), (3, 0), "{}", report.log);
+        let refused = |case: &str, what: &str| {
+            std::fs::write(dir.join("s/h/h.md"), format!("# h\n*x*\n\nlayer: runtime\n\n> (suite) 2026-10-24T10:00:00\n\n## testing\n{}\n", case)).unwrap();
+            let e = store::read(&dir.join("s")).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("not refused: {}", case));
+            assert!(e.contains(what), "{}: {}", case, e);
+        };
+        refused(">count() with ann in \"k\" → 3", "h.md:9: a case that names people says what each one's device wrote, `→ ann \"text\"`, the parts joined by `;`: a value, a text with no name or `check` cannot say whose it is");
+        refused(">count() → off \"x\"", "'off' cannot name a person in a case");
+        refused(">count() → h \"x\"", "'h' cannot name a person in a case: it is a feature's name");
+        refused(">count() → int \"x\"", "'int' cannot name a person in a case");
+        refused(">count() → a \"\"; b \"\"; c \"\"; d \"\"; e \"\"", "a case names 5 people, and a store has memory for 4 at one place: name at most 4");
+        refused(">count() with ann in \"k\", in \"j\" → ann \"\"", "a case that names people says whose every input is");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

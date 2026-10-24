@@ -1,0 +1,9 @@
+group int kick$ at (2 hz)
+group int hat$ at (2 hz)
+int mix$
+kick$ << kick$ + 1 if (kick$ < 4) forever
+hat$ << hat$ + 10 if (hat$ < 40) forever
+mix$ << kick$ + hat$ forever
+out$ << (mix$ << "\n") forever
+
+on run()

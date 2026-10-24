@@ -1,0 +1,7 @@
+global int visits$ << 0
+user int been$ << 0
+
+on visit()
+    visits$ << visits$ + 1
+    been$ << been$ + 1
+    out$ << visits$ << " " << been$ << "\n"

@@ -132,15 +132,15 @@ type __time = struct
     count: i64
     divisor: i64
 
-; the context: one field per feature-scope variable — name: scope, merge (feature)
-;   __enabled_platform: user, last (platform)
-;   __enabled_clock: user, last (clock)
+; the context: one field per feature-scope variable — name: scope (feature)
+;   __enabled_platform: user (platform)
+;   __enabled_clock: user (clock)
 ;   out: the output device, which stores nothing (platform)
-;   in: user, last (platform)
-;   t: user, last (clock)
-;   mark: user, last (clock)
-;   pace: user, last (clock)
-;   __node1_fin: node, last (clock)
+;   in: device (platform)
+;   t: device (clock)
+;   mark: device (clock)
+;   pace: device (clock)
+;   __node1_fin: node (clock)
 ;   __out_n, __clock, __out_p, __out_m: the context's own output and clock (question 107): how much it has written, its time, its capture and its marks
 type __ctx = struct
     __out_n: index

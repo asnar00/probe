@@ -1,0 +1,14 @@
+int mine$ << 0
+group int all$ << 0
+int key$ = presses (in$)
+
+on (int n) << pressed (char c)
+    mine$ << mine$ + 1
+    all$ << all$ + 1
+    out$ << mine$ << " of " << all$ << "\n"
+    n << 1
+
+on (int k$) << presses (char c$)
+    k$ << pressed (c$)
+
+on run()

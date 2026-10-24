@@ -338,6 +338,16 @@ on (int n) << bumped twice()
 
 `suite/zero/cells/cells/cells.zero:9` and `:18-24`. A `<<` sends once, each time its line runs, and a stream's name where one value is wanted is its latest item. A stream the store reads only so is a **cell**: one field of the context of the item's type, a push a store of it and a read a load, with no ring and nothing that can fill; `bump` lowers to the four lines an assigned variable did. Apply one more word to the stream, `count seen$`, and it is the queue it would have been, the name reading the same.
 
+Whose a stream is is one word before its type (fm3 places.md, question 149, ruled 24 October 2026): with none it is one person's on one device, `user` one person's on every device of theirs, `group` everyone's in the group, `global` everyone's. `device` and `static` are refused, each showing the line to write (no word, and `global`), and so is `merge`: how two writes combine is what the pushing line says, `count$ << count$ + 1` a sum. A case names people by a word before `in` and before a result part, each one person with one device, all in one group:
+
+```
+group char said$
+said$ << in$ forever
+out$ << said$ forever
+```
+
+`suite/zero/chat/chat/chat.zero:1-3`, with the case `>run() with ann in "hi" at 1 s → ann "hi" at 1 s; bob "hi" at 1 s`. A store that names a scope word or people has memory for four devices; a stream that is a user's, the group's or everyone's lives in a struct of that kind, `__user_mem`, `__group_mem`, `__global_mem`, and the device holds a copy of it while it is the current one, written back and taken again where the runner or the store makes another device current (`__zero_context`); the things going on of every device are taken in one time order, and after each turn every other device's standing lines run at its time. Such a store is at one place: it has no placed build yet. A store that names neither is built as it was.
+
 The words after a push's items say how often it happens (fm3 question 79; `suite/zero/words`): `if (c)` first, only where the condition holds, and then one of `(n) times`, `while (c)`, `until (c)` and `forever`.
 
 ```

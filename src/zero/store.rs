@@ -210,7 +210,27 @@ pub struct Case {
     /// in "k" at 3.5 s`, several allowed, each a text and the time it
     /// arrives, in the clock's steps, the times not going back
     pub input_at: Vec<(String, i64)>,
+    /// the people the case names (fm3 places.md, "what a case says";
+    /// hop fifty-seven): a word before `in` or before a result part,
+    /// in the order each is first named, the left first. Everyone
+    /// named is one person with one device, all in one group. Empty
+    /// where the case names nobody, who is one person as before
+    pub people: Vec<Person>,
 }
+
+/// one person a case names: the name, and the input the case gives
+/// their device, before the start and at a time
+#[derive(Clone, Debug, PartialEq)]
+pub struct Person {
+    pub name: String,
+    pub input: Option<String>,
+    pub input_at: Vec<(String, i64)>,
+}
+
+/// the most people a case may name: a store built for people has
+/// memory for this many devices, as many users, one group and the one
+/// global (`lower.rs`, `PEOPLE`)
+pub const PEOPLE: usize = 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expect {
@@ -229,6 +249,10 @@ pub enum Expect {
     /// `→ check at <file>:<line>`: the check that fails is on that
     /// line of the zero text (fm3 log 199)
     CheckAt(String),
+    /// what each person a case names wrote (hop fifty-seven): a text
+    /// or a timed result each, in the order of the case's `people`; a
+    /// person named on the left and not on the right wrote nothing
+    People(Vec<(String, Expect)>),
 }
 
 /// the store's clock (log 63): a million steps a second, the bootstrap's
@@ -471,6 +495,15 @@ pub fn read(dir: &Path) -> Result<Store, Error> {
             doc.changed = check_published(&name, &zfile, &mfile, &prose, date)?;
         }
         features.push(doc);
+    }
+    // a person a case names is no feature (hop fifty-seven): `ann off`
+    // and `ann in "k"` must not read alike
+    for f in &features {
+        for c in &f.cases {
+            if let Some(p) = c.people.iter().find(|p| features.iter().any(|g| g.name == p.name)) {
+                return Err(lex::error(&f.md_file, c.line, format!("'{}' cannot name a person in a case: it is a feature's name, and a person's name is a word the line reads no other way, not `in`, `on`, `off`, `wire`, `check`, a feature's name or a type's (fm3 places.md, \"what a case says\")", p.name)));
+            }
+        }
     }
     // composition order is creation time, the earliest origin's (log
     // 5, 49); two features created at once order by name
@@ -846,6 +879,29 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
     let mut context = Vec::new();
     let mut input = None;
     let mut input_at: Vec<(String, i64)> = Vec::new();
+    let mut people: Vec<Person> = Vec::new();
+    // a name a case may give a person: a word that is no word the line
+    // reads otherwise, and no type's
+    let named = |name: &str| -> Result<(), Error> {
+        if matches!(name, "in" | "on" | "off" | "wire" | "check" | "at" | "with") || types.contains(name) || syntax::BUILTIN_TYPES.contains(&name) {
+            return Err(lex::error(file, line, format!("'{}' cannot name a person in a case: a person's name is a word the line reads no other way, not `in`, `on`, `off`, `wire`, `check`, a feature's name or a type's (fm3 places.md, \"what a case says\"): `ann in \"k\" at 1 s`", name)));
+        }
+        Ok(())
+    };
+    // a time a case's input arrives at, `at 3.5 s`, in the clock's steps
+    let input_time = |n: &lex::Tok, unit: &str| -> Result<i64, Error> {
+        let per = match unit {
+            "s" => 1_000_000i64,
+            "ms" => 1000,
+            _ => return Err(lex::error(file, line, TIMED_INPUT)),
+        };
+        let us = match n {
+            lex::Tok::Int(v) if *v >= 0 => v.checked_mul(per),
+            lex::Tok::Float(f) => f.parse::<f64>().ok().map(|x| (x * per as f64).round() as i64),
+            _ => None,
+        };
+        us.ok_or_else(|| lex::error(file, line, TIMED_INPUT))
+    };
     let call = match call.find(") with ") {
         Some(i) => {
             let mut toks = Vec::new();
@@ -857,18 +913,44 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "on" => context.push((name.clone(), true)),
                     // an input with a time (question 53, fm3 log 220):
                     // the text arrives then, a thing going on like any other
-                    [lex::Tok::Word(w), lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] if w == "in" && at == "at" => {
-                        let per = match unit.as_str() {
-                            "s" => 1_000_000i64,
-                            "ms" => 1000,
+                    // a person's input (hop fifty-seven): `ann in "k" at
+                    // 1 s` into ann's `in$` then, `ann in "k"` before the
+                    // program starts
+                    [lex::Tok::Word(name), lex::Tok::Word(w), lex::Tok::Str(text), rest @ ..] if w == "in" && name != "in" => {
+                        named(name)?;
+                        let at = match rest {
+                            [] => None,
+                            [lex::Tok::Word(at), n, lex::Tok::Word(unit)] if at == "at" => Some(input_time(n, unit)?),
                             _ => return Err(lex::error(file, line, TIMED_INPUT)),
                         };
-                        let us = match n {
-                            lex::Tok::Int(v) if *v >= 0 => v.checked_mul(per),
-                            lex::Tok::Float(f) => f.parse::<f64>().ok().map(|x| (x * per as f64).round() as i64),
-                            _ => None,
+                        let k = match people.iter().position(|p| &p.name == name) {
+                            Some(k) => k,
+                            None => {
+                                people.push(Person { name: name.clone(), input: None, input_at: Vec::new() });
+                                people.len() - 1
+                            }
                         };
-                        let Some(us) = us else { return Err(lex::error(file, line, TIMED_INPUT)) };
+                        let p = &mut people[k];
+                        match at {
+                            None if text.is_empty() => {}
+                            None => {
+                                if p.input.replace(text.clone()).is_some() {
+                                    return Err(lex::error(file, line, format!("a case gives {} one `{} in \"text\"` before the start", name, name)));
+                                }
+                            }
+                            Some(us) => {
+                                if text.is_empty() {
+                                    return Err(lex::error(file, line, "a timed input has at least one character: a time at which nothing arrives says nothing"));
+                                }
+                                if p.input_at.last().is_some_and(|(_, t)| *t > us) {
+                                    return Err(lex::error(file, line, format!("the times of {}'s input do not go back: write each person's pieces in the order they arrive", name)));
+                                }
+                                p.input_at.push((text.clone(), us));
+                            }
+                        }
+                    }
+                    [lex::Tok::Word(w), lex::Tok::Str(text), lex::Tok::Word(at), n, lex::Tok::Word(unit)] if w == "in" && at == "at" => {
+                        let us = input_time(n, unit)?;
                         if text.is_empty() {
                             return Err(lex::error(file, line, "a timed input has at least one character: a time at which nothing arrives says nothing"));
                         }
@@ -883,7 +965,7 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
                             return Err(lex::error(file, line, "a case has one `in \"text\"`"));
                         }
                     }
-                    _ => return Err(lex::error(file, line, "a case's `with` clause is `<feature> off`, `<feature> on` or `in \"text\"`, several joined by commas")),
+                    _ => return Err(lex::error(file, line, "a case's `with` clause is `<feature> off`, `<feature> on`, `in \"text\"` or a person's `ann in \"text\"`, several joined by commas")),
                 }
             }
             &call[..i + 1]
@@ -891,6 +973,50 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         None => call,
     };
     let expect = expect.trim();
+    if !people.is_empty() && (input.is_some() || !input_at.is_empty()) {
+        return Err(lex::error(file, line, "a case that names people says whose every input is, `ann in \"k\" at 1 s`: an `in` with no name could be anyone's"));
+    }
+    // a result part that begins with a name is a person's (hop
+    // fifty-seven): `ann "1 of 1\n" at 1 s; bob "1 of 2" at 2 s`
+    let first_word = expect.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+    let personal = !first_word.is_empty() && first_word != "check" && first_word.chars().next().is_some_and(|c| c.is_alphabetic());
+    if personal || !people.is_empty() {
+        let mut parts: Vec<(String, Expect)> = Vec::new();
+        if personal {
+            for part in split_outside_quotes(expect, ';') {
+                let part = part.trim();
+                let mut toks = Vec::new();
+                lex::lex_line(part, line, file, &mut toks)?;
+                let toks: Vec<lex::Tok> = toks.into_iter().map(|t| t.tok).collect();
+                let Some((lex::Tok::Word(name), rest)) = toks.split_first().map(|(a, b)| (a.clone(), b)) else {
+                    return Err(lex::error(file, line, PEOPLE_SHAPE));
+                };
+                named(&name)?;
+                let e = match rest {
+                    [lex::Tok::Str(s)] => Expect::Text(s.clone()),
+                    [lex::Tok::Str(_), ..] => parse_timed(rest, file, line)?,
+                    _ => return Err(lex::error(file, line, PEOPLE_SHAPE)),
+                };
+                if parts.iter().any(|(n, _)| n == &name) {
+                    return Err(lex::error(file, line, format!("{} is named twice after `→`: one part says all of what a person's device wrote", name)));
+                }
+                parts.push((name, e));
+            }
+        } else {
+            return Err(lex::error(file, line, format!("a case that names people says what each one's device wrote, `→ {} \"text\"`, the parts joined by `;`: a value, a text with no name or `check` cannot say whose it is (fm3 places.md, \"what a case says\"; principle 7)", people[0].name)));
+        }
+        for (name, _) in &parts {
+            if !people.iter().any(|p| &p.name == name) {
+                people.push(Person { name: name.clone(), input: None, input_at: Vec::new() });
+            }
+        }
+        if people.len() > PEOPLE {
+            return Err(lex::error(file, line, format!("a case names {} people, and a store has memory for {} at one place: name at most {}", people.len(), PEOPLE, PEOPLE)));
+        }
+        let each = people.iter().map(|p| (p.name.clone(), parts.iter().find(|(n, _)| n == &p.name).map(|(_, e)| e.clone()).unwrap_or(Expect::Text(String::new())))).collect();
+        let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
+        return Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect: Expect::People(each), context, input, input_at, people });
+    }
     let expect = if expect == "check" {
         Expect::Check
     } else if let Some(site) = expect.strip_prefix("check at ") {
@@ -959,7 +1085,30 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         }
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input, input_at })
+    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input, input_at, people })
+}
+
+/// the shape of a person's part of a result, for a refusal
+const PEOPLE_SHAPE: &str = "each part after `→` in a case that names people is a name and what that person's device wrote, a text or a timed result, the parts joined by `;`: `→ ann \"1 of 1\\n\" at 1 s, \"2 of 3\" at 3 s; bob \"1 of 2\" at 2 s`";
+
+/// a text cut at a character that stands outside any quoted string
+fn split_outside_quotes(text: &str, at: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut from, mut quoted, mut escaped) = (0, false, false);
+    for (i, c) in text.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            c if c == at && !quoted => {
+                out.push(&text[from..i]);
+                from = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[from..]);
+    out
 }
 
 #[cfg(test)]
@@ -997,7 +1146,7 @@ mod tests {
         assert!(plain.context.is_empty() && plain.input.is_none());
         let err = |t: &str| parse_case(t, "x.md", 5, &types).err().unwrap().to_string();
         assert!(err("f() with in \"a\", in \"b\" → 1").contains("a case has one `in \"text\"`"));
-        assert!(err("f() with in hi → 1").contains("a case's `with` clause is `<feature> off`, `<feature> on` or `in \"text\"`"));
+        assert!(err("f() with in hi → 1").contains("a case's `with` clause is `<feature> off`, `<feature> on`, `in \"text\"` or a person's `ann in \"text\"`"));
     }
 
     /// a case that asserts on time (question 52, 53, fm3 log 91): the
