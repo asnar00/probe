@@ -216,6 +216,9 @@ pub struct Placed {
     /// where the wire takes time, why each function still on the
     /// machine's stack is (fm3 log 280)
     pub stack: std::collections::BTreeMap<String, super::turns::Why>,
+    /// whose each stream is that has a scope word (hop fifty-eight): the
+    /// field and `user`, `group` or `global`
+    pub homes: Vec<(String, String)>,
 }
 
 /// one thing a move hands across: its byte in the move's table, the
@@ -562,6 +565,15 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
             }
         }
     }
+    // whose each stream is (hop fifty-eight), from the context's comment
+    // rows, `;   all: group (counter), ...`: a field a user's, a group's or
+    // everyone's. The group's and everyone's have a home, the server
+    // where the cut puts anything there, and the client a copy; a user's
+    // has one device this hop and is placed as the device's own is
+    let homes: Vec<(String, String)> = lines.iter().filter_map(|l| l.strip_prefix(";   ")).filter_map(|l| l.split_once(": ")).filter_map(|(n, rest)| {
+        let w = rest.split(' ').next()?;
+        (matches!(w, "user" | "group" | "global") && !n.starts_with("__") && ctx_fields.iter().any(|(f, _)| f == n)).then(|| (n.to_string(), w.to_string()))
+    }).collect();
     // the stored streams: a field whose type is a stream holds one's
     // storage, and two fields the reset gives one value hold the same
     // one (a stream and a reader's own place in it)
@@ -726,7 +738,8 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
         }
         let writers = facts.iter().filter(|f| f.writes.contains(name)).count();
         let users = facts.iter().filter(|f| f.writes.contains(name) || f.reads.contains(name)).count();
-        if writers > 0 && (users > 1 || wire && (glue.reads.contains(name) || glue.writes.contains(name))) {
+        let homed = homes.iter().any(|(n, w)| n == name && w != "user");
+        if writers > 0 && (users > 1 || homed || wire && (glue.reads.contains(name) || glue.writes.contains(name))) {
             fields.push((name.clone(), ty.clone(), carried(ty, &structs)));
         }
     }
@@ -1171,7 +1184,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
     for item in &carried_types {
         out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default() }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default(), homes }))
 }
 
 /// what the world's text is written from
@@ -1663,6 +1676,16 @@ impl Placed {
         }
     }
 
+    /// Is this field a group's or everyone's stream whose home is the
+    /// server at this cut (hop fifty-eight)? The home of a shared scope
+    /// is the place every other place has a wire to (fm3 places.md, "what
+    /// the product says"): of two, the server, the place without
+    /// devices. Where the cut puts nothing on the server the program is at
+    /// one place, and the client is the home
+    fn homed(&self, name: &str, server: &BTreeSet<usize>) -> bool {
+        !server.is_empty() && self.homes.iter().any(|(n, w)| n == name && w != "user")
+    }
+
     /// which fields the wire carries from each place at this cut, and
     /// where each stored stream is read
     fn carries(&self, server: &BTreeSet<usize>) -> (Vec<[bool; 2]>, Vec<[bool; 2]>, Vec<[bool; 2]>) {
@@ -1674,11 +1697,16 @@ impl Placed {
                 // at both places, and what they read is read on the server too)
                 let written = (0..n).any(|e| self.at(e, server) == p && self.facts[e].writes.contains(name)) || self.wire && p == 1 && self.glue.writes.contains(name);
                 let lives = (0..n).any(|e| self.at(e, server) != p && (self.facts[e].writes.contains(name) || self.facts[e].reads.contains(name))) || self.wire && p == 0 && (self.glue.writes.contains(name) || self.glue.reads.contains(name));
-                c[p] = written && lives;
+                // (a group's or everyone's stream lives at its home too,
+                // the server, where the cut puts anything there: what the
+                // client writes of it is carried there, hop fifty-eight)
+                let home = p == 0 && self.homed(name, server);
+                c[p] = written && (lives || home);
             }
             c
         }).collect();
-        let read: Vec<[bool; 2]> = (0..self.rings.len()).map(|r| [0, 1].map(|p| (0..n).any(|e| self.at(e, server) == p && self.facts[e].ring_reads.contains(&r)))).collect();
+        // (... and a push into a stored one is made again at the home)
+        let read: Vec<[bool; 2]> = (0..self.rings.len()).map(|r| [0, 1].map(|p| (0..n).any(|e| self.at(e, server) == p && self.facts[e].ring_reads.contains(&r)) || p == 1 && self.rings[r].0.iter().any(|f| self.homed(f, server)))).collect();
         let pushed = (0..self.rings.len()).map(|r| [0, 1].map(|p| (0..n).any(|e| self.at(e, server) == p && self.facts[e].ring_pushes.contains(&r)))).collect();
         (fields, read, pushed)
     }
@@ -2019,6 +2047,30 @@ impl Placed {
         }
     }
 
+    /// Where each stream with a scope word is, as the placement says it
+    /// (hop fifty-eight; fm3 places.md, "what the product says": "the
+    /// compiler prints a placement: every stream's home"). Nothing for a
+    /// store that names no scope word
+    pub fn homes_said(&self, server: &BTreeSet<usize>) -> String {
+        if self.homes.is_empty() {
+            return String::new();
+        }
+        let w = self.homes.iter().map(|(n, _)| n.len() + 1).max().unwrap_or(0).max(6);
+        let mut out = "\nwhose each stream is, and where\n".to_string();
+        for (n, scope) in &self.homes {
+            let whose = match scope.as_str() { "user" => "a user's", "group" => "a group's", _ => "everyone's" };
+            let said = if scope == "user" {
+                "one person with one device: placed as the device's own is, at the place of the lines that use it".to_string()
+            } else if server.is_empty() {
+                "its home the client: nothing is on the server, so the program is at one place".to_string()
+            } else {
+                "its home the server, the place without devices, which every other place has a wire to; a copy at the client".to_string()
+            };
+            out.push_str(&format!("{:<w$}  {:<10}  {}\n", format!("{}$", n), whose, said, w = w));
+        }
+        out
+    }
+
     /// The placement (fm3 distribution.md, "what the compiler does",
     /// 7): every unit and where it runs, and every crossing, what kind
     /// it is and what is carried
@@ -2031,6 +2083,7 @@ impl Placed {
             out.push_str(&format!("{:<w1$}  {:<6}  {}\n", unit.name, place(self.at(u, server)), match (&unit.words, &unit.said) { (Some(w), _) => format!("the function `{}`", w), (None, Some(s)) => format!("the line `{}`", s), _ => "a function".to_string() }, w1 = w1));
         }
         out.push_str(&format!("{:<w1$}  {:<6}  {}\n", "", "client", "the devices: the output, the input, the list of things going on; and a case's call", w1 = w1));
+        out.push_str(&self.homes_said(server));
         if let Some(why) = self.refused(server) {
             out.push_str(&format!("\nrefused: {}\n", why));
             return out;

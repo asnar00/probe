@@ -18,7 +18,9 @@ A case names people by a word before `in`, and says what each one's screen showe
 
 Ann's second line reads `2 of 3`: Bob's press is in `all$`, which they share, and not in her `mine$`. A case that names nobody is one person, as every case was before people could be named, and two presses read `1 of 1` and `2 of 2`.
 
-Everyone a case names is one person with one device, and all of them are in one group. All of it is at one place, on one clock: a push into `all$` is the push of the line, and how two pushes combine is what the line says, `all$ << all$ + 1`, a sum (fm3 places.md, "the line is the merge").
+Everyone a case names is one person with one device, and all of them are in one group. At one place, on one clock, a push into `all$` is the push of the line, and how two pushes combine is what the line says, `all$ << all$ + 1`, a sum (fm3 places.md, "the line is the merge").
+
+At two places, the client and the server, `all$` has a home: the server, the place every other place has a wire to and the one without devices. The client holds a copy. `mine$` has no home of its own: it is the device's, and is wherever the lines that use it are.
 
 ## interface
 - `presses (c$)` is wired to `in$`: each key pressed runs `pressed (c)`, which pushes one more into `mine$` and into `all$` and writes the line.
@@ -29,6 +31,7 @@ Everyone a case names is one person with one device, and all of them are in one 
 - Which group a person is in is set from outside, by the case line: everyone it names is in one group. Nothing in a feature's code says it.
 - Each person's screen is their own: what one person's device writes is on their screen alone.
 - A case that names nobody is one person.
+- At two places a group's stream has its home at the server, and the client holds a copy. A case runs with one person at two places; two people over a wire are the hop after fifty-eight.
 
 ## testing
 >run() with in "k" at 1 s, in "k" at 2 s → "1 of 1\n" at 1 s, "2 of 2" at 2 s
@@ -37,4 +40,4 @@ Everyone a case names is one person with one device, and all of them are in one 
 >run() with ann in "kk" at 1 s → ann "1 of 1\n2 of 2" at 1 s; bob ""
 
 ## hostile
-A case that names people and gives a value has no one to give it to: `>run() with ann in "k" → 3` is refused, "a case that names people says what each one's device wrote, `→ ann "text"`, the parts joined by `;`: a value, a text with no name or `check` cannot say whose it is (fm3 places.md, "what a case says"; principle 7)". A person's name is a word the line reads no other way: `>run() → off "0"` is refused, "'off' cannot name a person in a case: a person's name is a word the line reads no other way, not `in`, `on`, `off`, `wire`, `check`, a feature's name or a type's (fm3 places.md, "what a case says"): `ann in "k" at 1 s`", and so is `counter` or `int` where a name stands. A case may name four people: a fifth is refused, "a case names 5 people, and a store has memory for 4 at one place: name at most 4". In a case that names people every input says whose it is: `with ann in "k", in "j"` is refused. The store is not yet built for a wire: `probe zero suite/zero/counter placement` says "'all$' is a group's, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire (fm3 places.md; the hop after fifty-seven)".
+A case that names people and gives a value has no one to give it to: `>run() with ann in "k" → 3` is refused, "a case that names people says what each one's device wrote, `→ ann "text"`, the parts joined by `;`: a value, a text with no name or `check` cannot say whose it is (fm3 places.md, "what a case says"; principle 7)". A person's name is a word the line reads no other way: `>run() → off "0"` is refused, "'off' cannot name a person in a case: a person's name is a word the line reads no other way, not `in`, `on`, `off`, `wire`, `check`, a feature's name or a type's (fm3 places.md, "what a case says"): `ann in "k" at 1 s`", and so is `counter` or `int` where a name stands. A case may name four people: a fifth is refused, "a case names 5 people, and a store has memory for 4 at one place: name at most 4". In a case that names people every input says whose it is: `with ann in "k", in "j"` is refused. At two places a case runs with one person: `probe zero suite/zero/counter run 'run() with ann in "k" at 1 s, bob in "k" at 2 s, ann in "k" at 3 s' --server all` says "a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)", and the runner passes such cases over at every cut in one line that says so.

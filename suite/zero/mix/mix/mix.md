@@ -25,6 +25,7 @@ The two clocks push into the group's streams, so each beat is worked out once fo
 - A scope word says whose a stream is and never where a line runs.
 - A line that pushes into a group's stream at a rate runs once for the group.
 - A line that reads only the group's streams runs on every device, each from the same items.
+- At two places the group's streams have their home at the server. With one viewer every line may run at either place, and the viewer's screen shows the same at every cut.
 
 ## testing
 >run() → "11\n22\n33\n44" at 2 hz
@@ -32,4 +33,4 @@ The two clocks push into the group's streams, so each beat is worked out once fo
 >run() → ann "11\n22\n33\n44" at 2 hz; bob "11\n22\n33\n44" at 2 hz; cy "11\n22\n33\n44" at 2 hz
 
 ## hostile
-`static int kick$ at (2 hz)` is refused: "`static int kick$ at (2 hz)`: `static` is `global`, everyone's (fm3 places.md, question 149): write `global int kick$ at (2 hz)`". The store is not yet built for a wire.
+`static int kick$ at (2 hz)` is refused: "`static int kick$ at (2 hz)`: `static` is `global`, everyone's (fm3 places.md, question 149): write `global int kick$ at (2 hz)`". At two places a case runs with one person, and the cases that name two or three are passed over at every cut: two people over a wire are the hop after fifty-eight.

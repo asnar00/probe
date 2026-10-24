@@ -2509,30 +2509,16 @@ pub fn for_people(store: &Store) -> bool {
     store.features.iter().any(|f| f.code.decls.iter().any(|d| matches!(d, Decl::Var(v) if !v.scope.is_empty())) || f.cases.iter().any(|c| !c.people.is_empty()))
 }
 
-/// why a store built for people has no placed build yet (hop
-/// fifty-seven): the next hop carries a shared stream over the wire
-fn not_for_a_wire(store: &Store) -> Error {
-    for f in &store.features {
-        for d in &f.code.decls {
-            if let Decl::Var(v) = d {
-                if let Some(w) = v.scope.first() {
-                    return lex::error(&f.code.file, v.line, format!("'{}{}' is {}'s, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire (fm3 places.md; the hop after fifty-seven)", v.name, if v.seq { "$" } else { "" }, match w.as_str() { "user" => "a user", "group" => "a group", _ => "everyone" }));
-                }
-            }
-        }
-        if let Some(c) = f.cases.iter().find(|c| !c.people.is_empty()) {
-            return lex::error(&f.md_file, c.line, "a case here names people, and a store whose cases name people is not yet built for a wire (fm3 places.md; the hop after fifty-seven)");
-        }
-    }
-    lex::error(&store.path.display().to_string(), 0, "not built for a wire")
-}
+/// the refusal of a case that names two people or more, in a placed
+/// build (hop fifty-eight): one person over the wire is built
+pub const TWO_OVER_A_WIRE: &str = "a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)";
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
-    // a store built for people is at one place this hop (fifty-seven):
-    // its placed build is refused by name
-    if store.places && for_people(store) {
-        return Err(not_for_a_wire(store));
-    }
+    // a store built for people is at two places from hop fifty-eight,
+    // with one person: its placed build is the build of one device, each
+    // place a context of it, and a shared stream a field of both, the
+    // server's its home and the client's a copy (fm3 places.md, "what the
+    // product says"; `places::Placed::homes`)
     // A store where a turn of the list can start a function that
     // pushes at a rate (fm3 question 135, log 232) is lowered again
     // with a pool of activities, and such functions rewritten as
@@ -2586,7 +2572,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty() || c.people.iter().any(|p| !p.input_at.is_empty()))), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new(), shared: for_people(store), shared_fields: Vec::new(), shared_readers: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty() || c.people.iter().any(|p| !p.input_at.is_empty()))), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new(), shared: for_people(store) && !store.places, shared_fields: Vec::new(), shared_readers: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -4329,6 +4315,21 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
     // device and gathers what each wrote (hop fifty-seven)
     if !case.people.is_empty() {
         let twin = format!("__people_{}", info.ir);
+        // a placed build has one person (hop fifty-eight): a case that
+        // names one is that person's case as one that names nobody is,
+        // their input and what their device wrote; one that names two
+        // or more is refused by name
+        if lowered.placed.is_some() {
+            if case.people.len() > 1 {
+                return Err(lex::error(file, case.line, TWO_OVER_A_WIRE));
+            }
+            let p = &case.people[0];
+            let expect = match &case.expect {
+                Expect::People(each) => each.iter().find(|(n, _)| *n == p.name).map(|(_, e)| e.clone()).unwrap_or(Expect::Text(String::new())),
+                e => e.clone(),
+            };
+            return Ok(Call { func, args: vals, nrets: info.results.len(), times, expect, context: case.context.clone(), input: p.input.clone().unwrap_or_default().into_bytes(), input_at: bytes_at(&p.input_at), people: Vec::new() });
+        }
         if !lowered.ir.contains(&format!("\nfn {}(", twin)) {
             return Err(lex::error(file, case.line, format!("a case that names people calls a function of numbers that is the store's own, and '{}' is not one", info.key)));
         }

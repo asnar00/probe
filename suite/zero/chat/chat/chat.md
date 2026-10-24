@@ -13,7 +13,9 @@ fm3 places.md, "chat, step one and step two"; touchstones.md, chat; question 149
 
 What I type goes into the room's stream, `said$`, which is `group` and so everyone's in the group I am in. What is in the room's stream goes to my screen. Both lines stand, `forever`, and both stand on every person's device: Ann types `hi` at 1 s, her line pushes it into `said$`, and the line on every device that reads `said$` writes it, so both screens show `hi` at 1 s. It is three lines for two people or twenty, which is the touchstone's step two.
 
-All of it is at one place, on one clock: an item pushed into `said$` carries the time of the push, and a push into a shared stream runs the standing lines wired to it on every device at that time, the device that pushed first and then the others in the order the case names the people.
+At one place, on one clock, an item pushed into `said$` carries the time of the push, and a push into a shared stream runs the standing lines wired to it on every device at that time, the device that pushed first and then the others in the order the case names the people.
+
+At two places `said$` has its home at the server and a copy at the client. With one person each line may run at either place: a push at the client is made again at the home, and one at the home is made again at the client where the line that reads it is. Each case with one person gives its own line at every cut, over a wire that takes no time and over one of 100 ms.
 
 ## interface
 - `said$ << in$ forever` pushes each character typed into the room's stream.
@@ -34,4 +36,4 @@ All of it is at one place, on one clock: an item pushed into `said$` carries the
 >run() with in "hi" at 1 s → "hi" at 1 s
 
 ## hostile
-`merge` is no word now: `group char said$ merge last` is refused, "`group char said$ merge last`: how two writes combine is what the line that pushes says (fm3 places.md, "the line is the merge"): `count$ << count$ + 1` is a sum, `size$ << s` the last write stands, `best$ << s if (s > best$)` the better of the two; write `group char said$`". A case that names a person twice after `→` is refused, "ann is named twice after `→`: one part says all of what a person's device wrote". The store is not yet built for a wire: `probe zero suite/zero/chat run 'run() with ann in "hi" at 1 s' --server all` says "'said$' is a group's, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire (fm3 places.md; the hop after fifty-seven)".
+`merge` is no word now: `group char said$ merge last` is refused, "`group char said$ merge last`: how two writes combine is what the line that pushes says (fm3 places.md, "the line is the merge"): `count$ << count$ + 1` is a sum, `size$ << s` the last write stands, `best$ << s if (s > best$)` the better of the two; write `group char said$`". A case that names a person twice after `→` is refused, "ann is named twice after `→`: one part says all of what a person's device wrote". At two places a case runs with one person: `probe zero suite/zero/chat run 'run() with ann in "hi" at 1 s, bob in "yo" at 2 s' --server all` says "a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)".

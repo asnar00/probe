@@ -254,6 +254,11 @@ pub(super) fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Polic
     let mut out = Vec::new();
     for (rank, f) in s.features.iter().enumerate() {
         for c in &f.cases {
+            // (a placed build has one person, hop fifty-eight: a case
+            // that names two is passed over, and `two_named` counts it)
+            if s.places && c.people.len() > 1 {
+                continue;
+            }
             let call = lower::resolve_case(l, c, &f.md_file, int_bits(policy)).map_err(|e| e.to_string())?;
             out.push(Planned { text: c.text.clone(), call, feature: f.name.clone(), rank, file: f.md_file.clone(), line: c.line });
         }
@@ -622,6 +627,10 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     };
     let calls = calls_of(&s, &l, policy)?;
     let at = case_at(&calls, which);
+    // (a case that names two people, at a cut: refused by name, hop fifty-eight)
+    if at.is_none() && s.places {
+        two_named_refused(&s, which)?;
+    }
     let mut calls = calls;
     let p = at.map(|i| calls.swap_remove(i)).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let (text, call) = (p.text.clone(), &p.call);
@@ -1077,6 +1086,9 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
     };
     cut.extend(wire.calls());
     let calls = calls_of(&s, &l, policy)?;
+    if case_named(&calls, which).is_none() {
+        two_named_refused(&s, which)?;
+    }
     let p = case_named(&calls, which).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let module = build(&l.ir, policy, level)?;
     let (own, pieces, log, thrown) = wire_runs(&module, &l, backend, level, "zero-wire", &cut, wire.d, but, p, &p.call.context)?;
@@ -1155,7 +1167,12 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
         return Ok(out);
     }
     let p = match which {
-        Some(w) => case_named(&calls, w).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", w))?,
+        Some(w) => {
+            if case_named(&calls, w).is_none() {
+                two_named_refused(&s, w)?;
+            }
+            case_named(&calls, w).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", w))?
+        }
         None => calls.iter().find(|c| matches!(c.call.expect, store::Expect::Timed(_))).or(calls.first()).ok_or("the store has no case")?,
     };
     let mut cut = if wire.choose.is_some() { chosen_cut(placed, server, then, &wire)? } else { placed.moves(&first, &later).before };
@@ -1810,6 +1827,7 @@ pub(super) struct Wires {
     pub(super) thrown: i64,
 }
 
+
 /// One store over a wire that takes time (fm3 cut.md, "a wire that
 /// takes time"; log 269): its build for a wire, compiled once, and
 /// each case in each of its contexts at every cut the runner tries,
@@ -1841,6 +1859,7 @@ pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, lev
         }
     };
     let Some(placed) = &lowered.placed else { return };
+    two_named(&s, "wire", &name, report);
     let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
     let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
     let (mut refused, mut failed, mut ran) = (0, 0, 0);
@@ -2211,6 +2230,27 @@ fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: u
 /// with each unit alone on the server, the cut being the calls that fill its
 /// table before the case. A cut that would carry an address is refused
 /// by name, passed over and counted (fm3 question 152)
+/// a case asked for by its line at a cut that names two people or more
+/// (hop fifty-eight): refused, where and why
+fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
+    for f in &s.features {
+        if let Some(c) = f.cases.iter().find(|c| c.people.len() > 1 && c.text.split('→').next().unwrap_or("").trim() == which.trim()) {
+            return Err(format!("{}:{}: {}", f.md_file, c.line, lower::TWO_OVER_A_WIRE));
+        }
+    }
+    Ok(())
+}
+
+/// The line that names the cases a placed build passes over (hop
+/// fifty-eight): those that name two people or more, one person being
+/// what is built over a wire. One line a store, where it has any
+fn two_named(s: &store::Store, tag: &str, name: &str, report: &mut Report) {
+    let n = s.features.iter().flat_map(|f| &f.cases).filter(|c| c.people.len() > 1).count();
+    if n > 0 {
+        report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over: two people over a wire are the hop after fifty-eight\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
+    }
+}
+
 fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, cuts: &mut Cuts) {
     let name = sdir.file_name().unwrap().to_string_lossy().to_string();
     cuts.stores += 1;
@@ -2234,6 +2274,9 @@ fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, 
         }
     };
     let Some(placed) = &lowered.placed else { return };
+    if let Ok(st) = store::read(sdir) {
+        two_named(&st, "cut", &name, report);
+    }
     let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
     let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
     let (mut refused, mut failed, mut ran) = (0, 0, 0);
@@ -7842,10 +7885,33 @@ mod tests {
         for want in ["data __ctx_mem: array(__ctx, 4)\n", "data __user_mem: array(__user, 4)\n", "data __group_mem: array(__group, 1)\n", "data __global_mem: array(__global, 1)\n", "type __group = struct\n    g: int\n", "\nfn __people(n: i64)\n", "\nfn __gather()\n"] {
             assert!(shared.contains(want), "{}: {}", want, shared);
         }
-        // ... and no placed build yet
-        let e = f(&format!("group int g$ << 0\n{}", tail), true).err().unwrap();
-        assert!(e.contains("'g$' is a group's, and a store with a stream that is a user's, a group's or everyone's is not yet built for a wire"), "{}", e);
+        // ... and its placed build is one device's, each place a context
+        // of it (hop fifty-eight)
+        let placed = f(&format!("group int g$ << 0\n{}", tail), true).unwrap();
+        assert!(placed.contains("data __ctx_mem: array(__ctx, 2)\n") && !placed.contains("__share"), "{}", placed);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shared stream over the wire (hop fifty-eight; fm3 places.md,
+    /// "what the product says", points 2 and 7): its home is the server
+    /// where the cut puts anything there, the client otherwise, and the
+    /// placement says so; and a case that names two people is refused at a
+    /// cut
+    #[test]
+    fn a_shared_stream_has_a_home_at_the_server() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let counter = Path::new("suite/zero/counter");
+        let all = placement(counter, Some("all"), &[]).unwrap();
+        assert!(all.contains("all$     a group's   its home the server, the place without devices, which every other place has a wire to; a copy at the client\n"), "{}", all);
+        assert!(all.contains("been$    a user's    one person with one device: placed as the device's own is"), "{}", all);
+        let none = placement(counter, None, &[]).unwrap();
+        assert!(none.contains("all$     a group's   its home the client: nothing is on the server, so the program is at one place\n"), "{}", none);
+        // what the client writes of it is carried to its home
+        let run_only = placement(counter, Some("run"), &[]).unwrap();
+        assert!(run_only.contains("the latest of all$              client → server"), "{}", run_only);
+        // two people at a cut
+        let e = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some("all"), &[]).unwrap_err();
+        assert!(e.contains("counter/counter.md:") && e.ends_with(": a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"), "{}", e);
     }
 
     /// A case names people (fm3 places.md, "what a case says"; hop
