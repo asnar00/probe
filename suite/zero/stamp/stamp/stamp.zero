@@ -1,0 +1,12 @@
+group int said$
+int key$ = presses (in$)
+
+on (int n) << pressed (char c)
+    said$ << 1
+    out$ << time of said$ << "\n"
+    n << 1
+
+on (int k$) << presses (char c$)
+    k$ << pressed (c$)
+
+on run()

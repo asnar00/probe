@@ -219,6 +219,9 @@ pub struct Placed {
     /// whose each stream is that has a scope word (hop fifty-eight): the
     /// field and `user`, `group` or `global`
     pub homes: Vec<(String, String)>,
+    /// a push into a group's or everyone's stored stream is stamped by
+    /// its home, and the record may say so (`__push_home`)
+    pub stamps: bool,
 }
 
 /// one thing a move hands across: its byte in the move's table, the
@@ -806,6 +809,10 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
     // (where the wire takes time: the stored streams a push into
     // which is no word, and what an arriving push does)
     let mut unwired: BTreeSet<usize> = BTreeSet::new();
+    // (hop fifty-eight) a push into a group's or everyone's stored stream
+    // is stamped by its home: such a push is written `__push_home`
+    let homed_ring = |r: usize| rings[r].0.iter().any(|f| homes.iter().any(|(n, w)| n == f && w != "user"));
+    let mut stamps = false;
     let mut arrivals = String::new();
     // the text, a function at a time
     let mut out = String::new();
@@ -965,6 +972,15 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
                 let verb = t.split(|c: char| c == '(' || c == ' ' || c == '<').next().unwrap_or("");
                 let one = args.get(1).is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit() || c == '-') || f.params.iter().any(|(n, ty)| n == v && *ty == item) || f.body.iter().flat_map(|l| defs(l.trim())).any(|(n, ty)| n == *v && ty == item));
                 let held = matches!(verb, "end" | "open") && args.len() == 1 || matches!(verb, "push_queue" | "push_queue_open" | "push" | "__push") && args.len() == 2 && word(&item) && item != "ptr" && one;
+                // (the home's time stamps an item of a group's or
+                // everyone's stream, fm3 places.md point 3: at both
+                // places the push is `__push_home`, which stamps the
+                // later of the place's own time and the world's clock
+                // where the place is the server)
+                let homed = verb == "__push" && homed_ring(s.ring);
+                stamps |= homed;
+                let t = if homed { t.replacen("__push(", "__push_home(", 1) } else { t.to_string() };
+                let t = t.as_str();
                 if !held {
                     unwired.insert(s.ring);
                     out.push_str(&format!("{p}__ro{n}: u1 = __ring_here({r})\n{p}if __ro{n}\n{p}    {t}\n", p = p, n = n, r = s.ring, t = t));
@@ -1179,12 +1195,15 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
         let heres: Vec<(String, Option<usize>)> = heres.into_iter().map(|g| { let o = units.iter().position(|u| u.irs.contains(&g)); (g, o) }).collect();
         let carried_fields: Vec<(usize, String, String)> = fields.iter().enumerate().filter(|(_, (_, ty, plain))| *plain && word(named.get(ty).map_or(ty.as_str(), |t| t.as_str())) && ty != "ptr").map(|(j, (n, t, _))| (j, n.clone(), t.clone())).collect();
         conts = ids.clone();
+        if stamps {
+            out.push_str(&format!("\n; (hop fifty-eight) a push into a group's or everyone's stream that keeps a tick an item: its home stamps it (fm3 places.md, \"whose clock stamps a shared item\"). The home is the server, and its time for a push is the later of its own and the world's clock, when the push reached it; a line of the record, 28, says where that is the later. At the client, and while the client runs the server's part again, a push is stamped with the place's own time\nfn __push_home(s: any$, v: any)\n    r: ptr = get s, ring\n    step: i64 = load r, 40\n    regular: u1 = cmp.gt step, 0\n    if regular\n        push(s, v)\n    else\n        t: i64 = __home_now()\n        push(s, t, v)\n    ret\nfn __push_home(s: any$, block: any[])\n    r: ptr = get s, ring\n    step: i64 = load r, 40\n    regular: u1 = cmp.gt step, 0\n    if regular\n        push(s, block)\n    else\n        t: i64 = __home_now()\n        push(s, t, block)\n    ret\nfn __home_now() -> i64\n    t: i64 = __now()\n    p: index = __wplace()\n    srv: u1 = cmp.eq p, 1\n    if srv\n    else\n        ret t\n{again}    wp: ptr = addr __w\n    w: i64 = load wp\n    late: u1 = cmp.gt w, t\n    if late\n    else\n        ret t\n    ln: i64 = load wp, 32\n    lroom: u1 = cmp.lt ln, {log}\n    if lroom\n        li: index = conv ln\n        l0: index = mul li, 6\n        lp: ptr = addr __wlog\n        store 1: i64, lp, l0, 8\n        l1: index = add l0, 1\n        store 28: i64, lp, l1, 8\n        l2: index = add l0, 2\n        store w, lp, l2, 8\n        l3: index = add l0, 3\n        store 0: i64, lp, l3, 8\n        l4: index = add l0, 4\n        store t, lp, l4, 8\n        l5: index = add l0, 5\n        store 0: i64, lp, l5, 8\n        ln2: i64 = add ln, 1\n        store ln2, wp, 32\n    ret w\n", log = WIRE_LOG, again = if choose { "    gw: ptr = addr __wg\n    g: i64 = load gw\n    ag: u1 = cmp.ne g, 0\n    if ag\n        ret t\n" } else { "" }));
+        }
         out.push_str(&wire_text(&World { fbase, fields: carried_fields, ids, heres, arrivals: arrivals.clone(), pooled, input: choose || fns.iter().any(|f| f.name == "__in_turn"), runs: fns.iter().any(|f| f.name == "__run"), writes: (present.contains("__out_ch"), present.contains("__out_block")), cols: pool.clone(), moved, nu, size, hsize, lands, changes, choose, paced }));
     }
     for item in &carried_types {
         out.push_str(&format!("\n; a value that holds an address, an array or a string, copied (fm3 log 267): its storage as the library lays it out, a queue's resident items in a buffer of their number or a ring's buffers whole, with its counts, its beat and its end, carved from the arena; the reader's place and its rules go with the value. A value is never modified, so the copy is the value\nfn __copied_{t}(v: {t}$) -> {t}$\n    r: ptr = get v, ring\n    ar: ptr = addr __arena\n    n: ptr = arena_alloc(ar, 64)\n    pushed: index = load r\n    o: index = load r, 8\n    hz: i64 = load r, 32\n    st: i64 = load r, 40\n    t0: i64 = load r, 48\n    e: i64 = load r, 56\n    w: index = load r, 24\n    store pushed, n\n    store o, n, 8\n    store hz, n, 32\n    store st, n, 40\n    store t0, n, 48\n    store e, n, 56\n    sz: index = sizeof {t}\n    stepped: u1 = cmp.ne st, 0\n    worded: u1 = cmp.ne w, 0\n    queue: u1 = and stepped, worded\n    if queue\n        k: index = sub pushed, o\n        one: index = const 1\n        cap: index = max(k, one)\n        bytes: index = mul sz, cap\n        total: index = add bytes, 16\n        vb: ptr = arena_alloc(ar, total)\n        buffer_init(vb, sz, cap)\n        slots: ptr = ptradd vb, 16\n        qa: ptr({t}) = load r, 16\n        qb: ptr({t}) = cast slots\n        s: {t}[] = pack qa, k, 1\n        d: {t}[] = pack qb, k, 1\n        copy d, s\n        store slots, n, 16\n        store cap, n, 24\n    else\n        wa: ptr = load r, 16\n        cap2: index = load wa, 8\n        bytes2: index = mul sz, cap2\n        total2: index = add bytes2, 16\n        wb: ptr = arena_alloc(ar, total2)\n        buffer_init(wb, sz, cap2)\n        va: {t}[] = slice wa\n        vc: {t}[] = slice wb\n        copy vc, va\n        store wb, n, 16\n        ta: ptr = load r, 24\n        if worded\n            tcap: index = load ta, 8\n            tbytes: index = mul tcap, 8\n            ttotal: index = add tbytes, 16\n            tb: ptr = arena_alloc(ar, ttotal)\n            eight: index = const 8\n            buffer_init(tb, eight, tcap)\n            ka: i64[] = slice ta\n            kb: i64[] = slice tb\n            copy kb, ka\n            store tb, n, 24\n        else\n            store ta, n, 24\n    v2: {t}$ = set v, ring, n\n    ret v2\n\n; ... where the wire was crossed to bring it: called at its own place, a function is handed the value itself\nfn __carried_{t}(v: {t}$, w: i64) -> {t}$\n    a: ptr = context()\n    cm: ptr = addr __ctx_mem\n    second: u1 = cmp.ne a, cm\n    here: i64 = conv second\n    same: u1 = cmp.eq here, w\n    if same\n        ret v\n    c: {t}$ = __copied_{t}(v)\n    ret c\n", t = item));
     }
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default(), homes }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default(), homes, stamps }))
 }
 
 /// what the world's text is written from

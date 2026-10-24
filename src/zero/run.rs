@@ -944,9 +944,9 @@ pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, ser
 /// and the time the move is said at the client
 pub fn run_wire_moved<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, server: Option<&str>, then: &[(String, i64)], wire: W) -> Result<String, String> {
     let wire: Wire = wire.into();
-    let ((head, shown, pieces, thrown), expect, log) = wire_moved_case_said(dir, which, policy, level, Backend::Native, server, then, &wire, said_but(), None)?;
+    let ((head, shown, pieces, thrown), expect, log, homes) = wire_moved_case_said(dir, which, policy, level, Backend::Native, server, then, &wire, said_but(), None)?;
     let never = never_said(&wire, &expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
-    Ok(format!("{}\n→ {}\n{}{}{}{}", head, shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log)))
+    Ok(format!("{}\n→ {}\n{}{}{}{}{}", head, shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log), homes))
 }
 
 /// the switches a test may set (`__wire_but`), said for `run` and
@@ -1060,13 +1060,13 @@ pub(super) fn wire_case_cost(dir: &Path, which: &str, policy: &ssa::Policy, leve
 /// move deliberately does not hand across
 #[allow(clippy::too_many_arguments)]
 pub(super) fn wire_moved_case<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, server: Option<&str>, then: &[(String, i64)], wire: W, but: i64, dropped: Option<&str>) -> Result<(String, String, Vec<Shown>, Option<i64>), String> {
-    wire_moved_case_said(dir, which, policy, level, backend, server, then, wire, but, dropped).map(|(r, _, _)| r)
+    wire_moved_case_said(dir, which, policy, level, backend, server, then, wire, but, dropped).map(|(r, _, _, _)| r)
 }
 
 /// ... and what the case says it gives
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
-fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, server: Option<&str>, then: &[(String, i64)], wire: W, but: i64, dropped: Option<&str>) -> Result<((String, String, Vec<Shown>, Option<i64>), store::Expect, Vec<i64>), String> {
+fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, backend: Backend, server: Option<&str>, then: &[(String, i64)], wire: W, but: i64, dropped: Option<&str>) -> Result<((String, String, Vec<Shown>, Option<i64>), store::Expect, Vec<i64>, String), String> {
     let wire: Wire = wire.into();
     let mut s = wired(dir)?;
     s.moved = !then.is_empty() || wire.choose.is_some();
@@ -1099,7 +1099,20 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
         store::Expect::Text(_) => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
         _ => vals.join(", "),
     };
-    Ok(((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces, thrown), p.call.expect.clone(), log))
+    let homes = homes_end_said(&placed.homes, &log);
+    Ok(((p.text.split('→').next().unwrap_or("").trim().to_string(), shown, pieces, thrown), p.call.expect.clone(), log, homes))
+}
+
+/// What a home stamped (hop fifty-eight), from the record's lines of kind
+/// 28: each item a home stamped later than its own time
+fn homes_end_said(_homes: &[(String, String)], log: &[i64]) -> String {
+    let mut out = String::new();
+    // (the home's stamps that were later than the item's own time)
+    let stamped: Vec<&[i64]> = log.chunks(6).filter(|c| c.len() == 6 && c[1] == 28).collect();
+    for c in &stamped {
+        out.push_str(&format!("stamped: an item of a group's or everyone's stream, for {}, stamped {} by its home, the server, when the push reached it\n", store::spell_time(c[4]), store::spell_time(c[2])));
+    }
+    out
 }
 
 /// The calls that fill a build whose cut the runner chooses (fm3 log
@@ -1280,6 +1293,11 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
                 continue;
             }
             22 | 23 => continue,
+            // (the home's stamp, hop fifty-eight)
+            28 => {
+                rows.push([store::spell_time(left), String::new(), "the server".to_string(), format!("stamps an item of a group's or everyone's stream with its own time, {}: the push reached it then, the home", store::spell_time(left)), format!("for {}", store::spell_time(stamp))]);
+                continue;
+            }
             24 => {
                 rows.push([store::spell_time(left), String::new(), "at the client".to_string(), format!("keeps nothing on the server: about {} bytes/s, less than twice the {} bytes/s the cut given put on the wire", two_figures(stamp), two_figures(a)), String::new()]);
                 continue;
@@ -1366,7 +1384,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
         _ => format!("{:?}", got.text.strip_suffix('\n').unwrap_or(&got.text)),
     };
     let never = never_said(&wire, &p.call.expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
-    out.push_str(&format!("\n→ {}\n{}{}{}{}", shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log)));
+    out.push_str(&format!("\n→ {}\n{}{}{}{}{}", shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log), homes_end_said(&placed.homes, &log)));
     Ok(out)
 }
 
@@ -1551,6 +1569,9 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
         for (k, w) in choose_wires().iter().enumerate() {
             report.log.push_str(&format!("  a wire of {}: {} runs, {} give the case's own line, {} stop short where the wire went for good; {} of {} pieces for {} or after late, the most {}{}; {} runs chose nothing on the server, {} gave the server its part back; {} moves\n", w.said(), chosen.runs[k], chosen.held[k], chosen.short[k], chosen.late[k], chosen.after[k], store::spell_time(changed_from(w)), spell_late(chosen.most[k]), chosen.worst[k], chosen.away[k], chosen.back[k], chosen.moves[k]));
         }
+        if chosen.stamped > 0 {
+            report.log.push_str(&format!("  home: {} run{} read a time a home stamped later than its item's own, not compared (hop fifty-eight)\n", chosen.stamped, if chosen.stamped == 1 { "" } else { "s" }));
+        }
     }
     if std::env::var("PROBE_ZERO_CUTS").is_ok() && wire_asked.is_none() && choose_asked.is_none() {
         // (`PROBE_ZERO_CUTS=moves`: the moves alone)
@@ -1586,6 +1607,9 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
             "wire: {} of {} stores hold at every cut; {} hold at every cut that is not refused; {} have a cut that does not hold; {} are not built for a wire ({} cuts run, {} refused; {} of {} runs at a cut hold by their own times; {} of {} cases in their contexts hold at every cut tried)\n",
             wires.hold, wires.stores, wires.hold_but, wires.broken, wires.unbuilt, wires.cuts, wires.refused, wires.passed, wires.passed + wires.failed, wires.case_hold, wires.cases
         ));
+        if wires.stamped > 0 {
+            report.log.push_str(&format!("home: {} run{} read a time a home stamped later than its item's own, and {} not compared (hop fifty-eight)\n", wires.stamped, if wires.stamped == 1 { "" } else { "s" }, if wires.stamped == 1 { "is" } else { "are" }));
+        }
         report.log.push_str(&format!("late: {} of {} cuts show nothing late; the most a piece is late at any cut is {}; {} of {} pieces of text are shown late\n", wires.cuts_on_time, wires.cuts, spell_late(wires.most), wires.late, wires.pieces));
         if wires.ahead_cuts > 0 {
             report.log.push_str(&format!("ahead: at {} cuts of stores with an input that arrives at a time the server works ahead of it; {} turns it took were thrown away\n", wires.ahead_cuts, wires.thrown));
@@ -1656,6 +1680,9 @@ struct Chosen {
     back: [usize; 7],
     /// the moves made, both ways, over all runs (fm3 log 296)
     moves: [usize; 7],
+    /// runs that read a time a home stamped later than its item's own,
+    /// not compared (hop fifty-eight)
+    stamped: usize,
 }
 
 /// One store with the cut chosen (fm3 log 290): every case, everything
@@ -1751,6 +1778,9 @@ fn test_choose(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize
                     let (ok, note) = judge(expect, own);
                     if ok {
                         ch.held[k] += 1;
+                    } else if home_stamped(&log) {
+                        ch.stamped += 1;
+                        report.log.push_str(&format!("home  {:<16} {} [a wire of {}]   {}: the home stamped an item later than its own time, and the case reads it: not compared\n", name, labelled(&cases[r.case].text, &r.label), w.said(), note));
                     } else {
                         report.log.push_str(&format!("chose {:<16} {} [a wire of {}]   {}\n", name, labelled(&cases[r.case].text, &r.label), w.said(), note));
                     }
@@ -1825,8 +1855,20 @@ pub(super) struct Wires {
     /// stores, and the turns the server took at them and threw away
     pub(super) ahead_cuts: usize,
     pub(super) thrown: i64,
+    /// runs that read a time a home stamped later than its item's own,
+    /// not compared: such a case is about lateness and says `with wire`
+    /// (hop fifty-eight; fm3 places.md, point 3)
+    pub(super) stamped: usize,
 }
 
+/// Did the home stamp an item later than its own time in this run (hop
+/// fifty-eight), by the wire's record? A run that then gives another
+/// line than its case's is not compared: the time it reads is the
+/// world's, which a wire that takes time moves, and a case about that
+/// says `with wire` (fm3 places.md, point 3)
+fn home_stamped(log: &[i64]) -> bool {
+    log.chunks(6).any(|c| c.len() == 6 && c[1] == 28)
+}
 
 /// One store over a wire that takes time (fm3 cut.md, "a wire that
 /// takes time"; log 269): its build for a wire, compiled once, and
@@ -1886,6 +1928,12 @@ pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, lev
         // (two batches, the second to read back when each piece was
         // shown: node's argument list holds only so many calls)
         let both = [0, 1].map(|mode| suite::run_calls(&module, &lowered.ir, backend, &runs.iter().map(|r| call(r, mode)).collect::<Vec<_>>(), &format!("{}-wire", name), level));
+        // (and where a home stamps, hop fifty-eight, a third for the record)
+        let logs: Vec<Vec<i64>> = if placed.stamps && d > 0 {
+            suite::run_calls(&module, &lowered.ir, backend, &runs.iter().map(|r| call(r, 2)).collect::<Vec<_>>(), &format!("{}-wire", name), level).map(|g| g.into_iter().map(|r| r.map(|g| g.marks).unwrap_or_default()).collect()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let got = match both {
             [Ok(own), Ok(shown)] => Ok(own.into_iter().zip(shown).flat_map(|(o, s)| [o, s]).collect::<Vec<_>>()),
             [Err(e), _] | [_, Err(e)] => Err(e),
@@ -1939,6 +1987,9 @@ pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, lev
             let (ok, note) = judge(&cases[r.case].call.expect, own);
             if ok {
                 wires.passed += 1;
+            } else if logs.get(i).is_some_and(|l| home_stamped(l)) {
+                wires.stamped += 1;
+                report.log.push_str(&format!("home  {:<16} {}   {}: the home stamped an item later than its own time, and the case reads it: not compared, a case about lateness says `with wire`\n", name, text, note));
             } else {
                 failed += 1;
                 wires.failed += 1;
@@ -2173,9 +2224,16 @@ fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: u
     let (mut most, mut on_time) = (0i64, 0);
     if !said.is_empty() {
         let both = [0, 1].map(|mode| suite::run_calls(&module, &lowered.ir, backend, &scalls[mode], &format!("{}-wmove", name), level));
+        // (where a home stamps, hop fifty-eight, the record too)
+        let logs: Vec<Vec<i64>> = if placed.stamps && d > 0 {
+            let records: Vec<suite::Call> = scalls[1].iter().map(|c| suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: c.checks, text: c.text, before: c.before.iter().map(|(f, a)| if f == "__wire_mode" { (f.clone(), vec![2]) } else { (f.clone(), a.clone()) }).collect(), live: c.live, times: c.times }).collect();
+            suite::run_calls(&module, &lowered.ir, backend, &records, &format!("{}-wmove", name), level).map(|g| g.into_iter().map(|r| r.map(|g| g.marks).unwrap_or_default()).collect()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         match both {
             [Ok(own), Ok(shown)] => {
-                for (((i, label), own), shown) in said.iter().zip(own).zip(shown) {
+                for (k, (((i, label), own), shown)) in said.iter().zip(own).zip(shown).enumerate() {
                     let r = runs[*i].0;
                     let mut late = 0i64;
                     if let (Ok(o), Ok(sh)) = (&own, &shown) {
@@ -2195,6 +2253,9 @@ fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: u
                     let (ok, note) = judge(&cases[r.case].call.expect, own);
                     if ok {
                         cuts.moves_passed += 1;
+                    } else if logs.get(k).is_some_and(|l| home_stamped(l)) {
+                        wires.stamped += 1;
+                        report.log.push_str(&format!("home  {:<16} {} [{}]   {}: the home stamped an item later than its own time, and the case reads it: not compared\n", name, labelled(&cases[r.case].text, &r.label), label, note));
                     } else {
                         failed[*i] += 1;
                         total += 1;
@@ -7674,7 +7735,7 @@ mod tests {
         let (hello, tick) = (Path::new("suite/zero/hello"), Path::new("suite/zero/tick"));
         let line = "\"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s";
         let run = |dir: &Path, case: &str, wire: &Wire, but: i64| -> (String, Vec<Shown>, Vec<i64>) {
-            let ((_, shown, pieces, _), _, log) = wire_moved_case_said(dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire, but, None).unwrap();
+            let ((_, shown, pieces, _), _, log, _) = wire_moved_case_said(dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], wire, but, None).unwrap();
             (shown, pieces, log)
         };
         let moves = |log: &[i64]| log.chunks(6).filter(|c| c.len() == 6 && (c[1] == 15 || c[1] == 16)).count();
@@ -7820,13 +7881,13 @@ mod tests {
         std::fs::write(dir.join("sum/sum.md"), format!("# sum\n*a running sum the server keeps, and keys*\n\nlayer: runtime\n\n> (suite) 2026-10-17T12:00:00\nA countdown, its running sum, and keys.\n\n## testing\n>{} → \"5\\n\" at 0 s, \"key 97\\nkey 98\\n9\\n\" at 1 s, \"12\\n\" at 2 s, \"key 99\\n\" at 2.5 s, \"14\\n\" at 3 s, \"key 100\\n15\\n\" at 4 s, \"liftoff\" at 5 s\n", case)).unwrap();
         let own = "\"5\\n\" at 0 s, \"key 97\\nkey 98\\n9\\n\" at 1 s, \"12\\nkey 99\\n14\\n\" at 2 hz from 2 s, \"key 100\\n15\\n\" at 4 s, \"liftoff\" at 5 s";
         let coming = Wire { d: 100_000, every: Some((500_000, 2_000_000, 1_000_000)), choose: Some(250_000), ..Default::default() };
-        let ((_, shown, _, _), _, log) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 0, None).unwrap();
+        let ((_, shown, _, _), _, log, _) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 0, None).unwrap();
         assert_eq!(shown, own);
         let said = chose_said(&coming, &log);
         assert!(said.contains("chose: nothing on the server at 1.25 s, by running the server's part again") && said.contains("\nchose: the cut given at 2.7 s: ") && said.contains("\nchose: nothing on the server at 3.2 s, by running the server's part again"), "{}", said);
         let table = placement_wire_moved(&dir, Some("all"), &[], coming.clone(), Some(case), &native, opt::MAX_LEVEL).unwrap();
         assert!(table.contains("keeps the server's state as the server will have it once it takes the hand as the server's new start") && table.contains("runs the server's part again from the server's start at 2.7 s to 3.2 s: "), "{}", table);
-        let ((_, wrong, _, _), _, _) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 4096, None).unwrap();
+        let ((_, wrong, _, _), _, _, _) = wire_moved_case_said(&dir, case, &native, opt::MAX_LEVEL, Backend::Native, Some("all"), &[], &coming, 4096, None).unwrap();
         assert!(wrong != own && wrong.contains("14\\n4\\n"), "run again from the world's start, a 4 that is no piece of the line: {}", wrong);
         let _ = std::fs::remove_dir_all(&dir);
         // going-two, hop fifty-two's chooser over 1 000 bytes a second: the three runs hop fifty-three left wrong
@@ -7893,10 +7954,11 @@ mod tests {
     }
 
     /// A shared stream over the wire (hop fifty-eight; fm3 places.md,
-    /// "what the product says", points 2 and 7): its home is the server
+    /// "what the product says", points 2, 3 and 7): its home is the server
     /// where the cut puts anything there, the client otherwise, and the
-    /// placement says so; and a case that names two people is refused at a
-    /// cut
+    /// placement says so; the home stamps an item with no rate with its
+    /// own time, when the push reached it; and a case that names two people
+    /// is refused at a cut
     #[test]
     fn a_shared_stream_has_a_home_at_the_server() {
         let native = suite::backend_policy(Backend::Native).unwrap();
@@ -7909,6 +7971,14 @@ mod tests {
         // what the client writes of it is carried to its home
         let run_only = placement(counter, Some("run"), &[]).unwrap();
         assert!(run_only.contains("the latest of all$              client → server"), "{}", run_only);
+        // the home's time
+        let stamp = Path::new("suite/zero/stamp");
+        let case = "run() with in \"k\" at 1 s";
+        let far = run_wire(stamp, case, &native, opt::MAX_LEVEL, Some("all"), 100_000).unwrap();
+        assert!(far.contains("→ \"1.1 s\" at 1 s\n") && far.contains("stamped: an item of a group's or everyone's stream, for 1 s, stamped 1.1 s by its home, the server"), "{}", far);
+        let near = run_wire(stamp, case, &native, opt::MAX_LEVEL, None, 100_000).unwrap();
+        assert!(near.contains("→ \"1 s\" at 1 s\n") && !near.contains("stamped:"), "{}", near);
+        assert!(run_wire(stamp, case, &native, opt::MAX_LEVEL, Some("all"), 0).unwrap().contains("→ \"1 s\" at 1 s\n"));
         // two people at a cut
         let e = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some("all"), &[]).unwrap_err();
         assert!(e.contains("counter/counter.md:") && e.ends_with(": a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"), "{}", e);
