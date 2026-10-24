@@ -2511,7 +2511,7 @@ pub fn for_people(store: &Store) -> bool {
 
 /// the refusal of a case that names two people or more, in a placed
 /// build (hop fifty-eight): one person over the wire is built
-pub const TWO_OVER_A_WIRE: &str = "a case here names two people or more, and two people over a wire that takes time are not built yet: over wires that take no time each person is a client of their own (fm3 places.md; hop-59.md)";
+pub const TWO_OVER_A_WIRE: &str = "a case here names two people or more, and over a wire that takes time two people run at three places, every line at its device and the server the home, not at a cut: say the wire without `--server` (fm3 places.md; hop-59.md)";
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
     // a store built for people is at two places from hop fifty-eight,

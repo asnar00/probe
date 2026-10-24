@@ -2249,6 +2249,7 @@ fn home_stamped(log: &[i64]) -> bool {
 /// by a second run and its lateness counted. A store or a cut the
 /// build does not hold is refused by name, passed over and counted
 pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, wires: &mut Wires, d: i64, timed_only: bool) {
+    let stamped0 = wires.stamped;
     let name = sdir.file_name().unwrap().to_string_lossy().to_string();
     let Ok(s) = wired(sdir) else { return };
     if timed_only && !s.features.iter().any(|f| f.cases.iter().any(|c| matches!(c.expect, store::Expect::Timed(_)))) {
@@ -2385,7 +2386,10 @@ pub(super) fn test_wire(sdir: &Path, policy: &ssa::Policy, backend: Backend, lev
         (0, _) => wires.hold_but += 1,
         _ => wires.broken += 1,
     }
-    report.log.push_str(&format!("wires {:<16} {} units, {} cuts run{}{}\n", name, placed.units.len(), ran, if refused > 0 { format!(", {} refused", refused) } else { String::new() }, if failed > 0 { format!(", {} runs do not hold", failed) } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
+    // (question 180, the session's wording: a store some of whose runs read
+    // a home's stamp holds by its own times, and says what was not compared)
+    let unstamped = wires.stamped - stamped0;
+    report.log.push_str(&format!("wires {:<16} {} units, {} cuts run{}{}\n", name, placed.units.len(), ran, if refused > 0 { format!(", {} refused", refused) } else { String::new() }, if failed > 0 { format!(", {} runs do not hold", failed) } else if unstamped > 0 { format!(": holds by its own times; its stamps not compared, {} run{}; nothing late at {}, the most {}", unstamped, if unstamped == 1 { "" } else { "s" }, on_time, spell_late(most)) } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
 }
 
 /// The two times a case with a time is moved at (fm3 log 265): one
@@ -2527,6 +2531,7 @@ fn test_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize,
 /// name, passed over and counted
 #[allow(clippy::too_many_arguments)]
 fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, report: &mut Report, cuts: &mut Cuts, wires: &mut Wires, d: i64, each: bool) {
+    let stamped0 = wires.stamped;
     let name = sdir.file_name().unwrap().to_string_lossy().to_string();
     let Ok(mut s) = wired(sdir) else { return };
     if !s.features.iter().any(|f| f.cases.iter().any(|c| move_times(&c.expect).is_some())) {
@@ -2653,7 +2658,8 @@ fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: u
             _ => cuts.case_broken += 1,
         }
     }
-    report.log.push_str(&format!("wmoves {:<15} {} cases with a time, {} moves run{}{}\n", name, runs.len(), said.len(), if any_refused { format!(", {} of {} ways refused", refused.iter().flatten().count(), ways.len()) } else { String::new() }, if total > 0 { format!(", {} runs do not hold", total) } else if said.is_empty() { String::new() } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
+    let unstamped = wires.stamped - stamped0;
+    report.log.push_str(&format!("wmoves {:<15} {} cases with a time, {} moves run{}{}\n", name, runs.len(), said.len(), if any_refused { format!(", {} of {} ways refused", refused.iter().flatten().count(), ways.len()) } else { String::new() }, if total > 0 { format!(", {} runs do not hold", total) } else if said.is_empty() { String::new() } else if unstamped > 0 { format!(": holds by its own times; its stamps not compared, {} run{}; nothing late at {}, the most {}", unstamped, if unstamped == 1 { "" } else { "s" }, on_time, spell_late(most)) } else { format!(": every case holds at each by its own times; nothing late at {}, the most {}", on_time, spell_late(most)) }));
 }
 
 /// One store at every cut the runner tries (fm3 touchstones.md, "hello,
@@ -2679,7 +2685,7 @@ fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
 fn two_named(s: &store::Store, tag: &str, name: &str, report: &mut Report) {
     let n = s.features.iter().flat_map(|f| &f.cases).filter(|c| c.people.len() > 1).count();
     if n > 0 {
-        report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over: two people over a wire that takes time are not built yet\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
+        report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over at a cut: over a wire that takes time two people run at three places, every line at its device (`with wire`, `run --wire`)\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
     }
 }
 
