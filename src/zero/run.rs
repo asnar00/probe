@@ -1106,10 +1106,7 @@ impl HomeSaid {
 
     /// as a person reads it
     fn said(&self) -> String {
-        let mut out = format!("a wire of {} from each device to the server", spell_late(self.delay));
-        for (n, d) in &self.delays {
-            out.push_str(&format!(", {}'s of {}", n, spell_late(*d)));
-        }
+        let mut out = if self.delays.is_empty() { format!("a wire of {} from each device to the server", spell_late(self.delay)) } else { format!("a wire from each device to the server: {}{}", self.delays.iter().map(|(n, d)| format!("{}'s of {}", n, spell_late(*d))).collect::<Vec<_>>().join(", "), if self.delay > 0 { format!(", the others' of {}", spell_late(self.delay)) } else { String::new() }) };
         for (what, who, from, to) in &self.gone {
             out.push_str(&match what.as_str() {
                 "server" => format!("; the server gone from {} to {}", store::spell_time(*from), store::spell_time(*to)),
@@ -1159,6 +1156,8 @@ fn home_said(log: &[i64], people: &[String], names: &[String], wires: &home::Wir
     let mut copies = Vec::new();
     let mut end: Vec<(i64, i64, i64)> = Vec::new();
     let (mut pushes, mut takes) = (0, 0);
+    let mut own: Vec<(i64, i64, i64, i64, i64)> = Vec::new();
+    let mut told: Vec<(i64, i64, i64, i64)> = Vec::new();
     for r in log.chunks(6).filter(|r| r.len() == 6) {
         match r[0] {
             1 => {
@@ -1186,6 +1185,8 @@ fn home_said(log: &[i64], people: &[String], names: &[String], wires: &home::Wir
                 }
             }
             4 => end.push((r[1], r[2], r[3])),
+            5 => own.push((r[1], r[2], r[3], r[4], r[5])),
+            6 => told.push((r[1], r[2], r[3], r[4])),
             _ => {}
         }
     }
@@ -1198,6 +1199,18 @@ fn home_said(log: &[i64], people: &[String], names: &[String], wires: &home::Wir
     }
     if !kept.is_empty() {
         out.push_str(&format!("kept as shown:\n{}\n", kept.join("\n")));
+    }
+    // (question 165's other half: each place measures the wire it has, and
+    // the home tells every device what it measured of every other)
+    if !own.is_empty() {
+        out.push_str("what each device sees of every wire:\n");
+        for (j, last, least, gaps, gone) in &own {
+            let mut parts = vec![if *last == 0 { "its own: no round trip yet".to_string() } else { format!("its own, round trips: the last {}, the least {}{}", spell_late(*last), spell_late(*least), if *gaps > 0 { format!(", {} gap{}, {} in all", gaps, if *gaps == 1 { "" } else { "s" }, spell_late(*gone)) } else { String::new() }) }];
+            for (_, k, d, g) in told.iter().filter(|(jj, k, _, _)| jj == j && k != j) {
+                parts.push(if *d == 0 { format!("{}'s: nothing told yet", who(*k)) } else { format!("{}'s, as the home last told it: {} one way{}", who(*k), spell_late(*d), if *g > 0 { format!(", {} gap{}", g, if *g == 1 { "" } else { "s" }) } else { String::new() }) });
+            }
+            out.push_str(&format!("  {}: {}\n", who(*j), parts.join("; ")));
+        }
     }
     for (f, name) in names.iter().enumerate() {
         let at: Vec<String> = end.iter().filter(|(g, _, _)| *g == f as i64).map(|(_, place, v)| if *place < 0 { format!("{} at its home, the server", v) } else { format!("{} at {}'s copy", v, who(*place)) }).collect();
@@ -8386,6 +8399,11 @@ mod tests {
             let got = run_home(counter, six, &native, opt::MAX_LEVEL, &said).unwrap();
             assert!(got.contains(line) && got.contains("at the end: all$ 6 at its home, the server; 6 at ann's copy; 6 at bob's copy\n") && got.contains("push for 4 s reached the home at 6.1 s, 2 s late"), "{} {}: {}", what, who, got);
         }
+        // every pair measured: each device its own wire's round trips, and
+        // every other wire as the home told it (question 165)
+        let said = HomeSaid { delays: vec![("ann".into(), 100_000), ("bob".into(), 2_000_000)], gone: vec![("wire".into(), "ann".into(), 3_000_000, 6_000_000)], ..Default::default() };
+        let got = run_home(counter, six, &native, opt::MAX_LEVEL, &said).unwrap();
+        assert!(got.contains("  ann: its own, round trips: the last 200 ms, the least 200 ms, 1 gap, 2 s in all; bob's, as the home last told it: 2 s one way\n  bob: its own, round trips: the last 4 s, the least 4 s; ann's, as the home last told it: 100 ms one way, 1 gap\n"), "{}", got);
         // a device gone: its key lost, its copy caught up from the home
         let said = HomeSaid { delay: 100_000, gone: vec![("device".into(), "ann".into(), 3_000_000, 6_000_000)], ..Default::default() };
         let got = run_home(counter, six, &native, opt::MAX_LEVEL, &said).unwrap();
