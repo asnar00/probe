@@ -33,4 +33,4 @@ The two clocks push into the group's streams, so each beat is worked out once fo
 >run() → ann "11\n22\n33\n44" at 2 hz; bob "11\n22\n33\n44" at 2 hz; cy "11\n22\n33\n44" at 2 hz
 
 ## hostile
-`static int kick$ at (2 hz)` is refused: "`static int kick$ at (2 hz)`: `static` is `global`, everyone's (fm3 places.md, question 149): write `global int kick$ at (2 hz)`". At two places a case runs with one person, and the cases that name two or three are passed over at every cut: two people over a wire are the hop after fifty-eight.
+`static int kick$ at (2 hz)` is refused: "`static int kick$ at (2 hz)`: `static` is `global`, everyone's (fm3 places.md, question 149): write `global int kick$ at (2 hz)`". At every cut, over wires that take no time, the cases that name two viewers or three give their own lines too: each viewer's device is a client of its own, and the server the home of the two clocks' streams.

@@ -15,7 +15,7 @@ What I type goes into the room's stream, `said$`, which is `group` and so everyo
 
 At one place, on one clock, an item pushed into `said$` carries the time of the push, and a push into a shared stream runs the standing lines wired to it on every device at that time, the device that pushed first and then the others in the order the case names the people.
 
-At two places `said$` has its home at the server and a copy at the client. With one person each line may run at either place: a push at the client is made again at the home, and one at the home is made again at the client where the line that reads it is. Each case with one person gives its own line at every cut, over a wire that takes no time and over one of 100 ms.
+At two places `said$` has its home at the server and a copy at the client. With one person each line may run at either place: a push at the client is made again at the home, and one at the home is made again at the client where the line that reads it is. Each case with one person gives its own line at every cut, over a wire that takes no time and over one of 100 ms. With two people or three there are three places or four, each person's device a client of its own and the server the home, a wire from each device to the server; over wires that take no time every case gives its own line at every cut.
 
 ## interface
 - `said$ << in$ forever` pushes each character typed into the room's stream.

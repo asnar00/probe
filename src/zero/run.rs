@@ -264,7 +264,7 @@ pub(super) fn calls_of_with(s: &store::Store, l: &lower::Lowered, policy: &ssa::
         for c in f.cases.iter().filter(|c| wired || c.wire.is_none()) {
             // (a placed build has one person, hop fifty-eight: a case
             // that names two is passed over, and `two_named` counts it)
-            if s.places && c.people.len() > 1 {
+            if s.places && (s.wire || s.moved) && c.people.len() > 1 {
                 continue;
             }
             let call = lower::resolve_case(l, c, &f.md_file, int_bits(policy)).map_err(|e| e.to_string())?;
@@ -2221,7 +2221,7 @@ fn test_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize,
                 }
                 let cut = placed.moves(a, &[(b.clone(), t)]);
                 said.push((i, cut.label));
-                scalls.push(suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.into_iter().chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: true });
+                scalls.push(suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.into_iter().chain(call_setters(&r.switches, c)).collect(), live: false, times: true });
             }
         }
     }
@@ -2427,7 +2427,7 @@ fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
 fn two_named(s: &store::Store, tag: &str, name: &str, report: &mut Report) {
     let n = s.features.iter().flat_map(|f| &f.cases).filter(|c| c.people.len() > 1).count();
     if n > 0 {
-        report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over: two people over a wire are the hop after fifty-eight\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
+        report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over: two people over a wire that takes time are not built yet\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
     }
 }
 
@@ -2454,9 +2454,6 @@ fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, 
         }
     };
     let Some(placed) = &lowered.placed else { return };
-    if let Ok(st) = store::read(sdir) {
-        two_named(&st, "cut", &name, report);
-    }
     let unreached = out_of_reach(&module, &lowered.funcs, kind_of(backend));
     let runs: Vec<&Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
     let (mut refused, mut failed, mut ran) = (0, 0, 0);
@@ -2476,7 +2473,7 @@ fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, 
             .iter()
             .map(|r| {
                 let c = &cases[r.case].call;
-                suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.iter().cloned().chain(setters(&r.switches, &c.input, &c.input_at)).collect(), live: false, times: matches!(c.expect, store::Expect::Timed(_)) }
+                suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: true, before: cut.before.iter().cloned().chain(call_setters(&r.switches, c)).collect(), live: false, times: timed_expect(&c.expect) }
             })
             .collect();
         if scalls.is_empty() {
@@ -8065,10 +8062,13 @@ mod tests {
         for want in ["data __ctx_mem: array(__ctx, 4)\n", "data __user_mem: array(__user, 4)\n", "data __group_mem: array(__group, 1)\n", "data __global_mem: array(__global, 1)\n", "type __group = struct\n    g: int\n", "\nfn __people(n: i64)\n", "\nfn __gather()\n"] {
             assert!(shared.contains(want), "{}: {}", want, shared);
         }
-        // ... and its placed build is one device's, each place a context
-        // of it (hop fifty-eight)
+        // ... and its placed build over wires that take no time is a pair
+        // of contexts a person, their client and the server's context for
+        // their part, the home's shared (hop fifty-nine)
         let placed = f(&format!("group int g$ << 0\n{}", tail), true).unwrap();
-        assert!(placed.contains("data __ctx_mem: array(__ctx, 2)\n") && !placed.contains("__share"), "{}", placed);
+        for want in ["data __ctx_mem: array(__ctx, 8)\n", "data __group_mem: array(__group, 2)\n", "\nfn __zero_place(k: i32)\n", "\nfn __pair_base() -> ptr\n"] {
+            assert!(placed.contains(want), "{}: {}", want, placed);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8088,7 +8088,7 @@ mod tests {
         assert!(all.contains("all$     a group's   its home the server, the place without devices, which every other place has a wire to; a copy at the client\n"), "{}", all);
         assert!(all.contains("been$    a user's    one person with one device: placed as the device's own is"), "{}", all);
         let none = placement(counter, None, &[]).unwrap();
-        assert!(none.contains("all$     a group's   its home the client: nothing is on the server, so the program is at one place\n"), "{}", none);
+        assert!(none.contains("all$     a group's   its home the client with one person: nothing is on the server, so the program is at one place; with two people or more the server, which every person's device has a wire to, there being none between two devices\n"), "{}", none);
         // what the client writes of it is carried to its home
         let run_only = placement(counter, Some("run"), &[]).unwrap();
         assert!(run_only.contains("the latest of all$              client → server"), "{}", run_only);
@@ -8104,9 +8104,14 @@ mod tests {
         let lost = Wire { d: 100_000, then: vec![(3_000_000, GONE), (6_000_000, 100_000)], speeds: vec![None, None], choose: Some(250_000), ..Default::default() };
         let got = run_wire_moved(counter, "run() with in \"k\" at 1 s, in \"k\" at 4 s, in \"k\" at 7 s", &native, opt::MAX_LEVEL, Some("all"), &[], lost).unwrap();
         assert!(got.contains("→ \"1 of 1\\n\" at 1 s, \"2 of 2\\n\" at 4 s, \"3 of 3\" at 7 s\n") && got.contains("at the end: all$ 3 at its home, the client, which holds the server's part"), "{}", got);
-        // two people at a cut
-        let e = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some("all"), &[]).unwrap_err();
-        assert!(e.contains("counter/counter.md:") && e.ends_with(": a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"), "{}", e);
+        // two people at a cut over wires that take no time: each a client
+        // of their own, the server a context for each one's part (hop
+        // fifty-nine)
+        for at in ["all", "pressed", "run"] {
+            let got = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some(at), &[]).unwrap();
+            assert!(got.ends_with("→ ann \"1 of 1\\n\" at 1 s, \"2 of 3\" at 3 s; bob \"1 of 2\" at 2 s\n"), "{}: {}", at, got);
+        }
+        assert!(all.contains("\nthe places, for a case that names people\neach person's device  a client of their own"), "{}", all);
         // a case about lateness
         let restart = wire_case_run(Path::new("suite/zero/restart"), "launch() with in \"k\" at 3.5 s, wire 100 ms", &native, opt::MAX_LEVEL).unwrap().unwrap();
         assert!(restart.contains("shown at the client: \"10\\n\" at 200 ms, \"9\\n8\\n7\\n\" at 1 hz from 1 s, \"10\\n\" at 3.7 s,") && !restart.contains("does not hold"), "{}", restart);

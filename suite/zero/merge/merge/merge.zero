@@ -1,0 +1,17 @@
+group int size$ << 0
+group int count$ << 0
+group int best$ << 0
+int key$ = presses (in$)
+
+on (int n) << pressed (char c)
+    int s = int(c) - 48
+    size$ << s
+    count$ << count$ + 1
+    best$ << s if (s > best$)
+    out$ << size$ << " " << count$ << " " << best$ << "\n"
+    n << 1
+
+on (int k$) << presses (char c$)
+    k$ << pressed (c$)
+
+on run()

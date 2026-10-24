@@ -2511,7 +2511,7 @@ pub fn for_people(store: &Store) -> bool {
 
 /// the refusal of a case that names two people or more, in a placed
 /// build (hop fifty-eight): one person over the wire is built
-pub const TWO_OVER_A_WIRE: &str = "a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)";
+pub const TWO_OVER_A_WIRE: &str = "a case here names two people or more, and two people over a wire that takes time are not built yet: over wires that take no time each person is a client of their own (fm3 places.md; hop-59.md)";
 
 pub fn lower(store: &Store) -> Result<Lowered, Error> {
     // a store built for people is at two places from hop fifty-eight,
@@ -2572,7 +2572,7 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         Some((s, ps)) => (s, ps.as_slice()),
         None => (store, &[][..]),
     };
-    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty() || c.people.iter().any(|p| !p.input_at.is_empty()))), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new(), shared: for_people(store) && !store.places, shared_fields: Vec::new(), shared_readers: Vec::new() };
+    let mut l = Lowerer { fvar_said: HashMap::new(), cell_decls: Names::new(), zelse: HashMap::new(), ats: std::collections::BTreeSet::new(), cell_only: Names::new(), cells: Names::new(), counted: streams.iter().filter_map(|s| s.strip_prefix("#n ").map(str::to_string)).collect(), uncelled, lstreams: streams.clone(), lcells_live: Names::new(), one: false, arg_ones: Vec::new(), now: false, arg_nows: Vec::new(), device_param: None, device_fns: HashMap::new(), trial: (int_ty(), float_ty()), funcs: Vec::new(), types: HashMap::new(), type_lines: Vec::new(), data: Vec::new(), out: String::new(), nstr: 0, fvars: Vec::new(), copies: std::collections::BTreeSet::new(), rings: std::collections::BTreeSet::new(), push_read: None, nodes: Vec::new(), node_inputs: std::collections::HashSet::new(), edges: Vec::new(), timed: std::collections::HashSet::new(), timed_all: false, kept: std::collections::HashSet::new(), kept_all: false, all_queues: false, queues: std::collections::HashSet::new(), queue_locals: std::collections::HashSet::new(), read_by_name: std::collections::HashSet::new(), node_reads: HashMap::new(), any_rated_wiring: false, regular: std::collections::HashSet::new(), regular_locals: std::collections::HashSet::new(), frame_only: Names::new(), views: HashMap::new(), view_wanted: false, view_given: false, cur: String::new(), ranks: HashMap::new(), features: Vec::new(), parents: HashMap::new(), type_feature: HashMap::new(), round: Round::Any, candidate: None, product: HashMap::new(), statics: std::collections::HashSet::new(), rated: std::collections::HashSet::new(), rates: HashMap::new(), edge_fns: HashMap::new(), bare: std::collections::HashSet::new(), bare_edges: HashMap::new(), lines: Vec::new(), node_fed: Names::new(), tick_quiet: HashMap::new(), bare_gates: None, loose_push: false, after_push: None, on_beat: std::collections::HashSet::new(), loop_beats: HashMap::new(), loop_beat: None, clock: store.clock, static_schedule: false, wakes: HashMap::new(), rests: HashMap::new(), guard: true, push_site: None, sure_push: false, arrivals: HashMap::new(), ended: Vec::new(), queue_pushes: std::collections::BTreeMap::new(), written: std::collections::HashSet::new(), placed: std::collections::HashSet::new(), zeroic: HashMap::new(), zprocs: HashMap::new(), fed: Names::new(), bodies: HashMap::new(), inline_here: false, edge_here: false, folded: Names::new(), sited: store.sites || store.trace, declared_rates: HashMap::new(), traced: store.trace, trace_open: false, cell_traced: false, sites: Vec::new(), site_line: 0, inlining: Vec::new(), zfiles: HashMap::new(), zfields: Vec::new(), zwired: 0, zthread: None, zbroken: false, zerror: None, zended: Names::new(), zloud: Names::new(), tail: false, zero_first: Names::new(), line_kept: Names::new(), nowed: Names::new(), push_target: false, wide: Vec::new(), end_bits: HashMap::new(), firsts: Vec::new(), own_ops: HashMap::new(), own_types: Vec::new(), lits: Vec::new(), hidden: std::collections::HashSet::new(), fvar_lits: HashMap::new(), own_site: None, nonzero: Vec::new(), tick_was: HashMap::new(), fed_here: None, one_lines: HashMap::new(), clocks: Vec::new(), in_clock: None, timed_in: store.features.iter().any(|f| f.cases.iter().any(|c| !c.input_at.is_empty() || c.people.iter().any(|p| !p.input_at.is_empty()))), restarts: restarted(&store.features), acts, moved: store.places && store.moved, wire: store.places && store.wire, places: store.places, wired_at: Vec::new(), shared: for_people(store) && !(store.places && (store.wire || store.moved)), pairs: for_people(store) && store.places && !store.wire && !store.moved, shared_fields: Vec::new(), shared_readers: Vec::new() };
     for f in &store.features {
         l.features.push(f.name.clone());
         l.ranks.insert(f.name.clone(), store.rank(f.layer.as_deref().unwrap_or("")));
@@ -3028,8 +3028,11 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
         ir = people_start(&ir, PEOPLE);
         // (a device's capture is a quarter of `__out` and of `__out_t`
         // where it was a half: the GPU's driver has room for no more)
-        let cap = 131072 / PEOPLE;
-        ir = ir.replace("array(i64, 131074)", &format!("array(i64, {})", (cap + 1) * PEOPLE)).replace("    oi: index = mul sw, 65536\n", &format!("    oi: index = mul sw, {}\n", cap)).replace("    ms: index = mul sw, 65537\n", &format!("    ms: index = mul sw, {}\n", cap + 1)).replace("    fits: u1 = cmp.le n2, 65536\n", &format!("    fits: u1 = cmp.le n2, {}\n", cap)).replace("a half of `__out` for each\n; of the store's two contexts", &format!("a part of `__out` for each\n; of the store's {} devices, {} bytes", PEOPLE, cap)).replace("a half of `__out_t` each", "a part of `__out_t` each");
+        // (a pair of contexts a person where the build is placed, hop
+        // fifty-nine: an eighth each)
+        let parts = if l.pairs { 2 * PEOPLE } else { PEOPLE };
+        let cap = 131072 / parts;
+        ir = ir.replace("array(i64, 131074)", &format!("array(i64, {})", (cap + 1) * parts)).replace("    oi: index = mul sw, 65536\n", &format!("    oi: index = mul sw, {}\n", cap)).replace("    ms: index = mul sw, 65537\n", &format!("    ms: index = mul sw, {}\n", cap + 1)).replace("    fits: u1 = cmp.le n2, 65536\n", &format!("    fits: u1 = cmp.le n2, {}\n", cap)).replace("a half of `__out` for each\n; of the store's two contexts", &format!("a part of `__out` for each\n; of the store's {} devices, {} bytes", PEOPLE, cap)).replace("a half of `__out_t` each", "a part of `__out_t` each");
 
     }
     // an activity ended partway by a `restart` leaves (fm3 log 220)
@@ -4319,7 +4322,11 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
         // names one is that person's case as one that names nobody is,
         // their input and what their device wrote; one that names two
         // or more is refused by name
-        if lowered.placed.is_some() {
+        // (from hop fifty-nine a placed build over wires that take no
+        // time has a pair of contexts a person, and a case that names two
+        // or more runs as it does at one place, on every person's client)
+        let pairs = lowered.ir.contains("\nfn __zero_place(");
+        if lowered.placed.is_some() && (case.people.len() == 1 || !pairs) {
             if case.people.len() > 1 {
                 return Err(lex::error(file, case.line, TWO_OVER_A_WIRE));
             }
@@ -4780,6 +4787,11 @@ struct Lowerer {
     /// of those where the group's stream starts, for a device made
     /// after the first
     shared_readers: Vec<String>,
+    /// a store built for people with a placed build over wires that
+    /// take no time (hop fifty-nine, three places): each person a
+    /// client of their own and the server's context for their part, a
+    /// pair of contexts a person, the server's sharing the home
+    pairs: bool,
     /// the streams some `restart` names (fm3 log 220): each has a
     /// phase and the number of its run in the context
     restarts: Names,
@@ -8414,7 +8426,38 @@ impl Lowerer {
         let one = |kind: &str| self.shared_fields.iter().filter(|(_, w, _)| w == kind).cloned().collect::<Vec<_>>();
         // the copies written back, or taken: a user's, and the group's
         // with everyone's, each where `user` and `wide` say
-        for (name, back) in [("__share_out", true), ("__share_in", false)] {
+        // (hop fifty-nine) where each person is a pair of contexts, a
+        // value kept as one word lives in one place, the home, and every
+        // context takes it whenever it is current: the wires take no
+        // time. A stored stream has two storages, the home's, which the
+        // server's contexts share, and one the clients share, each push
+        // made again at the other where a line there reads it, as the
+        // placed build makes it again at the other place
+        if self.pairs {
+            for (name, back) in [("__share_out", true), ("__share_in", false)] {
+                writeln!(t, "\n; (hop fifty-nine) this context's copies of {} streams: its user's where `user` is 1, its group's and everyone's where `wide` is; a value kept as one word in the first of each two places, the home's, and a stored stream in the first at a client and the second at the server\nfn {}(user: u1, wide: u1)\n    c: ptr = context()\n    x: __ctx = load c\n    cm: ptr = __pair_base()\n    second: u1 = cmp.ne c, cm\n    pl: index = conv second\n    ui: index = get x, __user\n    u2: index = mul ui, 2\n    ul: index = add u2, pl\n    gi: index = get x, __group\n    g2: index = mul gi, 2\n    gl: index = add g2, pl\n    l0: index = const 0", if back { "the shared streams written back to where they live" } else { "the shared streams taken from where they live" }, name).unwrap();
+                let mut n = 0;
+                for (kind, flag, arr, i0, il) in [("user", "user", format!("ptr(array(__user, {}))", 2 * PEOPLE), "u2", "ul"), ("group", "wide", "ptr(array(__group, 2))".to_string(), "g2", "gl"), ("global", "wide", "ptr(array(__global, 2))".to_string(), "l0", "pl")] {
+                    let fs = one(kind);
+                    if fs.is_empty() {
+                        continue;
+                    }
+                    writeln!(t, "    {k}m: {arr} = addr __{k}_mem\n    {k}e0: ptr(__{k}) = index {k}m, {i0}\n    {k}el: ptr(__{k}) = index {k}m, {il}\n    {k}p0: ptr = cast {k}e0\n    {k}pl: ptr = cast {k}el", k = kind, arr = arr, i0 = i0, il = il).unwrap();
+                    for (f, _, ty) in &fs {
+                        n += 1;
+                        let at = if ty.ends_with('$') { format!("{}pl", kind) } else { format!("{}p0", kind) };
+                        writeln!(t, "    if {}", flag).unwrap();
+                        if back {
+                            writeln!(t, "        s{n}: __{k} = load {at}\n        v{n}: {ty} = get x, {f}\n        r{n}: __{k} = set s{n}, {f}, v{n}\n        store r{n}, {at}", n = n, k = kind, at = at, ty = ty, f = f).unwrap();
+                        } else {
+                            writeln!(t, "        s{n}: __{k} = load {at}\n        v{n}: {ty} = get s{n}, {f}\n        y{n}: __ctx = load c\n        r{n}: __ctx = set y{n}, {f}, v{n}\n        store r{n}, c", n = n, k = kind, at = at, ty = ty, f = f).unwrap();
+                        }
+                    }
+                }
+                t.push_str("    ret\n");
+            }
+        }
+        for (name, back) in [("__share_out", true), ("__share_in", false)].into_iter().filter(|_| !self.pairs) {
             writeln!(t, "\n; (hop fifty-seven) this device's copies of {} streams: its user's where `user` is 1, its group's and everyone's where `wide` is\nfn {}(user: u1, wide: u1)\n    c: ptr = context()\n    x: __ctx = load c", if back { "the shared streams written back to where they live" } else { "the shared streams taken from where they live" }, name).unwrap();
             let mut cur = "x".to_string();
             let mut n = 0;
@@ -8465,6 +8508,23 @@ impl Lowerer {
         writeln!(t, "\n; the runner's, before a case that names people (hop fifty-seven): n people, each with one device, all in one group; the first device is made by the reset, and each after it here, and the first is the current one after\nfn __people(n: i64)\n    most: u1 = cmp.le n, {people}\n    check most\n    loop(k: i64 = 1) bound {people}\n        more: u1 = cmp.lt k, n\n        if more\n            k32: i32 = conv k\n            __zero_context(k32)\n            __zero_new()\n            k2: i64 = add k, 1\n            continue k2\n        break\n    z: i32 = const 0\n    __zero_context(z)\n    ret", people = PEOPLE).unwrap();
         // ... and each one's output, gathered into the first's capture
         writeln!(t, "\n; after a case that names people (hop fifty-seven): what each device after the first wrote, and when, put after the first's in its capture, a separator byte (30) before each, whose word in the marks is the end of the part before it; the runner cuts them apart\nfn __gather()\n    sp: ptr = addr __share\n    n: i64 = load sp\n    cm: ptr(array(__ctx, {people})) = addr __ctx_mem\n    z: index = const 0\n    e0: ptr(__ctx) = index cm, z\n    q0: ptr = cast e0\n    c0: __ctx = load q0\n    n0: index = get c0, __out_n\n    p0: ptr = get c0, __out_p\n    m0: ptr = get c0, __out_m\n    w0: i64 = conv n0\n    store w0, sp, 16\n    loop(k: i64 = 1) bound {people}\n        more: u1 = cmp.lt k, n\n        if more\n            ki: index = conv k\n            ek: ptr(__ctx) = index cm, ki\n            qk: ptr = cast ek\n            ck: __ctx = load qk\n            nk: index = get ck, __out_n\n            pk: ptr = get ck, __out_p\n            mk: ptr = get ck, __out_m\n            aw: i64 = load sp, 16\n            at: index = conv aw\n            sep: u8 = const 30\n            store sep, p0, at, 1\n            b0: index = add at, 1\n            loop(i: index = 0) bound 65536\n                w: i64 = load mk, i, 8\n                j: index = add b0, i\n                store w, m0, j, 8\n                done: u1 = cmp.ge i, nk\n                if done\n                    break\n                ch: u8 = load pk, i, 1\n                store ch, p0, j, 1\n                i2: index = add i, 1\n                continue i2\n            a2: index = add b0, nk\n            a2w: i64 = conv a2\n            store a2w, sp, 16\n            k2: i64 = add k, 1\n            continue k2\n        break\n    fw: i64 = load sp, 16\n    fi: index = conv fw\n    c1: __ctx = load q0\n    c2: __ctx = set c1, __out_n, fi\n    store c2, q0\n    ret", people = PEOPLE).unwrap();
+        if self.pairs {
+            // (hop fifty-nine, three places) a person is a pair of
+            // contexts, their client at 2k and the server's context for
+            // their part at 2k + 1: `__zero_context(k)` is the k-th
+            // person's client, as it is the k-th device at one place;
+            // `__zero_place(p)` is place p of the current person, the
+            // wire's; and a person is made with both. The wires take no
+            // time, so every context's copies are the home's whenever it
+            // is the current one: written back where it is left and taken
+            // where it is entered, at whichever place
+            let n2 = 2 * PEOPLE;
+            t = t.replace(&format!("    p: ptr(array(__ctx, {people})) = addr __ctx_mem\n    i: index = conv k\n", people = PEOPLE), &format!("    p: ptr(array(__ctx, {n2})) = addr __ctx_mem\n    k2: i32 = mul k, 2\n    i: index = conv k2\n", n2 = n2));
+            t = t.replace("            __zero_context(k32)\n            __zero_new()\n", "            __zero_context(k32)\n            __zero_place(1)\n            __zero_new()\n            __zero_place(0)\n            __zero_new()\n");
+            t = t.replace(&format!("    cm: ptr(array(__ctx, {people})) = addr __ctx_mem\n", people = PEOPLE), &format!("    cm: ptr(array(__ctx, {n2})) = addr __ctx_mem\n", n2 = n2));
+            t = t.replace("            ki: index = conv k\n            ek: ptr(__ctx) = index cm, ki\n", "            kd: i64 = mul k, 2\n            ki: index = conv kd\n            ek: ptr(__ctx) = index cm, ki\n");
+            writeln!(t, "\n; (hop fifty-nine) place p of the current person: 0 their client, 1 the server's context for their part. The copies of the shared streams the context it leaves holds are written back to the home, and the one it enters takes them: the wires take no time\nfn __zero_place(k: i32)\n    sp: ptr = addr __share\n    n: i64 = load sp\n    c0: i64 = load sp, 8\n    was: u1 = cmp.lt c0, n\n    if was\n        __share_out(1, 1)\n    p: ptr(array(__ctx, {n2})) = addr __ctx_mem\n    c2: i64 = mul c0, 2\n    kw: i64 = conv k\n    j: i64 = add c2, kw\n    i: index = conv j\n    e: ptr(__ctx) = index p, i\n    c: ptr = cast e\n    context_set(c)\n    if was\n        __share_in(1, 1)\n    ret\n\n; (hop fifty-nine) the current person's first context, their client: from it a context is the client's or the server's\nfn __pair_base() -> ptr\n    sp: ptr = addr __share\n    c0: i64 = load sp, 8\n    p: ptr(array(__ctx, {n2})) = addr __ctx_mem\n    j: i64 = mul c0, 2\n    i: index = conv j\n    e: ptr(__ctx) = index p, i\n    c: ptr = cast e\n    ret c", n2 = n2).unwrap();
+        }
         self.out.push_str(&t);
         for (f, _, _) in self.shared_fields.clone() {
             self.written.insert(f);
@@ -8731,9 +8791,10 @@ impl Lowerer {
                 // group and everyone's, a struct of each kind that has
                 // a stream; `__share` is how many devices are made since
                 // the reset and which is the current one
-                self.data.push(format!("data __ctx_mem: array(__ctx, {})", PEOPLE));
+                self.data.push(format!("data __ctx_mem: array(__ctx, {})", if self.pairs { 2 * PEOPLE } else { PEOPLE }));
                 self.data.push("data __share: array(i64, 4)".into());
-                for (kind, n) in [("user", PEOPLE), ("group", 1), ("global", 1)] {
+                let twice = if self.pairs { 2 } else { 1 };
+                for (kind, n) in [("user", PEOPLE * twice), ("group", twice), ("global", twice)] {
                     let mine: Vec<String> = self.shared_fields.iter().filter(|(_, w, _)| w == kind).map(|(f, _, t)| format!("{}: {}", f, t)).collect();
                     if !mine.is_empty() {
                         self.type_lines.push(format!("; a {}'s streams (hop fifty-seven): where they live; a device holds a copy while it is the current one\ntype __{} = struct\n    {}", kind, kind, mine.join("\n    ")));
@@ -8746,7 +8807,7 @@ impl Lowerer {
             fresh = Some(b.out.len());
             // which of the store's two contexts this is, and so which
             // half of the capture and of the marks is its own
-            let which: &[&str] = if self.shared { &["cx: ptr = context()", "ks: ptr = addr __share", "kw: i64 = load ks, 8", "sw: index = conv kw"] } else { &["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second"] };
+            let which: &[&str] = if self.pairs { &["cx: ptr = context()", "ks: ptr = addr __share", "kw: i64 = load ks, 8", "cm: ptr = __pair_base()", "second: u1 = cmp.ne cx, cm", "s1: i64 = conv second", "k2: i64 = mul kw, 2", "s2: i64 = add k2, s1", "sw: index = conv s2", "uw: index = conv kw"] } else if self.shared { &["cx: ptr = context()", "ks: ptr = addr __share", "kw: i64 = load ks, 8", "sw: index = conv kw"] } else { &["cx: ptr = context()", "cm: ptr = addr __ctx_mem", "second: u1 = cmp.ne cx, cm", "sw: index = conv second"] };
             for l in which.iter().chain(["ob: ptr(array(u8, 131072)) = addr __out", "oi: index = mul sw, 65536", "oq: ptr(u8) = index ob, oi", "op: ptr = cast oq"].iter()) {
                 b.line(l);
             }
@@ -8915,7 +8976,9 @@ impl Lowerer {
             }
             let c = b.tmp();
             let mut own = String::new();
-            if self.shared {
+            if self.pairs {
+                own.push_str("uw, 0, ");
+            } else if self.shared {
                 own.push_str("sw, 0, ");
             }
             if self.moved {
@@ -9016,7 +9079,7 @@ impl Lowerer {
                 writeln!(self.out, "\n; before every case: the arena emptied, no device made, and the current context made new").unwrap();
                 writeln!(self.out, "fn __zero_reset()").unwrap();
                 self.out.push_str(&b.out[..at]);
-                self.out.push_str("    zs: ptr = addr __share\n    store 0: i64, zs\n    __zero_new()\n    ret\n");
+                self.out.push_str(if self.pairs { "    zs: ptr = addr __share\n    store 0: i64, zs\n    store 0: i64, zs, 8\n    __zero_new()\n    ret\n" } else { "    zs: ptr = addr __share\n    store 0: i64, zs\n    __zero_new()\n    ret\n" });
                 writeln!(self.out, "\n; the current context at its first values, its streams made in the arena, and whose it is").unwrap();
                 writeln!(self.out, "fn __zero_new()").unwrap();
                 self.out.push_str(&b.out[at..]);
