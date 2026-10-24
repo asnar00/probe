@@ -22,6 +22,8 @@ and when Ann presses 4 a second later her line reads `4 3 5`: the last write is 
 
 Each person has a device of their own, and the server is the home of the three streams, the place every device has a wire to. At every cut, with wires that take no time, the lines are the same.
 
+Over a wire of 100 ms each device shows its own push at once, against its copy: Ann's screen `3 1 3`, Bob's `5 1 5`. The two pushes cross, and the home runs each line again against its own streams, Ann's first: size 5, two pushes, the best 5, which every copy has at 1.2 s, so Ann's next key at 2 s reads `4 3 5`. What crosses is the push and never the value: had the values crossed, the home would be handed `count$` 1 twice and `best$` 3 after 5. Where Ann's wire is gone from 500 ms to 3 s her two pushes reach the home at 3.1 s, after Bob's of 1 s, and the home puts them in its order by time and then by place: Ann's 3 of 1 s, Bob's 5 of 1 s, Ann's 4 of 2 s. Every copy ends with size 4, three pushes and the best 5.
+
 ## interface
 - `presses (c$)` is wired to `in$`: each key runs `pressed (c)`, which pushes into the three streams and writes them.
 - `run` is the case's call and does nothing.
@@ -29,9 +31,11 @@ Each person has a device of their own, and the server is the home of the three s
 ## rules
 - How two pushes into a shared stream combine is what the line that pushes says.
 - Two pushes at one moment are taken in the order the case names the people.
+- Over a wire, the home's order is by each push's own time and then by place; a screen keeps what it showed.
 
 ## testing
 >run() with ann in "3" at 1 s, bob in "5" at 1 s → ann "3 1 3" at 1 s; bob "5 2 5" at 1 s
 >run() with ann in "3" at 1 s, bob in "5" at 1 s, ann in "4" at 2 s → ann "3 1 3\n" at 1 s, "4 3 5" at 2 s; bob "5 2 5" at 1 s
 >run() with bob in "5" at 1 s, ann in "3" at 1 s → bob "5 1 5" at 1 s; ann "3 2 5" at 1 s
 >run() with in "7" at 1 s, in "2" at 2 s → "7 1 7\n" at 1 s, "2 2 7" at 2 s
+>run() with ann in "3" at 1 s, bob in "5" at 1 s, ann in "4" at 2 s, wire 100 ms → ann "3 1 3\n" at 1 s, "4 3 5" at 2 s; bob "5 1 5" at 1 s

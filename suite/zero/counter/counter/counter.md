@@ -31,6 +31,17 @@ With no wire named, the case gives its lines at their own times, 1 s, 4 s and 7 
 
 The home can be lost. When the wire goes, from 3 s to 6 s, the client takes the server's part by running it again from the server's start and what it sent the server, and being the home is part of it: the press at 4 s is worked out at the client, and `2 of 2` is shown at 4.25 s, as soon as the client sees the server is not answering. When the wire is steady again the client gives the part back, and the home's copy is what the client worked out: nothing lost, nothing counted twice. That wire is the runner's, `--wire 100 ms then gone at 3 s then 100 ms at 6 s`, and not a case's (`probe zero suite/zero/counter run '...' --fast --server all --choose 250 ms --wire ...`).
 
+With two people over wires that take time there are three places: Ann's device, Bob's device, and the server, which is the home of `all$`. Each device runs its person's lines, `pressed` reading `mine$`, which is the device's own; a wire of 100 ms goes from each device to the server. Both press at 1 s:
+
+    world    ann's copy    the home    bob's copy
+    1.0 s    1             0           1           each shows its own push at once: "1 of 1"
+    1.1 s    1             2           1           the home runs `all$ << all$ + 1` twice, Ann's first
+    1.2 s    2             2           2           every copy has the home's
+
+What crosses is the push, never the value: the device's turn as it began, which the home runs again against its own `all$`, so two presses give 2. Bob's screen showed `1 of 1` where the home's order gives `1 of 2`, and keeps what it showed: text on a screen is not unwritten (fm3 places.md, "a screen already written"). The case that says so names its people and its wire, `with ann in "k" at 1 s, bob in "k" at 1 s, wire 100 ms`.
+
+Any one place or wire can be lost and come back. With presses from both at 1 s, 4 s and 7 s, the server gone from 3 s to 6 s, Ann's wire gone, or Bob's, every screen shows the case's own lines and every copy has 6 at the end: a push made while its wire is gone is kept and sent when the wire is back, the home putting it in its order by time and then by place, and a copy that has had pushes of its own the home had not runs them again on top of the home's values. With Ann's device gone from 3 s to 6 s her key at 4 s is lost, nothing is shown there, and when the device comes back its copy takes the home's. Those wires are the runner's: `probe zero suite/zero/counter run '<case>' --wire 100 ms --gone server 3 s to 6 s`, `--gone ann's wire 3 s to 6 s`, `--gone ann 3 s to 6 s`.
+
 ## interface
 - `presses (c$)` is wired to `in$`: each key pressed runs `pressed (c)`, which pushes one more into `mine$` and into `all$` and writes the line.
 - `run` is the case's call and does nothing.
@@ -41,7 +52,7 @@ The home can be lost. When the wire goes, from 3 s to 6 s, the client takes the 
 - Each person's screen is their own: what one person's device writes is on their screen alone.
 - A case that names nobody is one person.
 - At two places a group's stream has its home at the server, and the client holds a copy. With two people there are three places: each person's device, a client of their own, and the server, which runs each person's part the cut puts there and is the home; a wire from each device to the server and none between the two devices. Over wires that take no time every case gives its own line at every cut.
-- A case about a wire that takes time says `with wire <time>`. It runs with everything on the server over that wire, and its times are when each piece is shown at the client.
+- A case about a wire that takes time says `with wire <time>`. With one person it runs with everything on the server over that wire, and its times are when each piece is shown at the client. With two people or more each device runs its person's lines and the server is the home, a wire of that delay from each device; each line is shown at its device at once.
 
 ## testing
 >run() with in "k" at 1 s, in "k" at 2 s → "1 of 1\n" at 1 s, "2 of 2" at 2 s
@@ -50,6 +61,10 @@ The home can be lost. When the wire goes, from 3 s to 6 s, the client takes the 
 >run() with ann in "k" at 1 s, bob in "k" at 2 s, ann in "k" at 3 s → ann "1 of 1\n" at 1 s, "2 of 3" at 3 s; bob "1 of 2" at 2 s
 >run() with ann in "k" at 1 s, bob in "k" at 1 s → ann "1 of 1" at 1 s; bob "1 of 2" at 1 s
 >run() with ann in "kk" at 1 s → ann "1 of 1\n2 of 2" at 1 s; bob ""
+>run() with ann in "k" at 1 s, bob in "k" at 1 s, wire 100 ms → ann "1 of 1" at 1 s; bob "1 of 1" at 1 s
+>run() with ann in "k" at 1 s, bob in "k" at 1 s, ann in "k" at 4 s, bob in "k" at 4 s, ann in "k" at 7 s, bob in "k" at 7 s → ann "1 of 1\n" at 1 s, "2 of 3\n" at 4 s, "3 of 5" at 7 s; bob "1 of 2\n" at 1 s, "2 of 4\n" at 4 s, "3 of 6" at 7 s
+>run() with ann in "k" at 1 s, bob in "k" at 1 s, ann in "k" at 4 s, bob in "k" at 4 s, ann in "k" at 7 s, bob in "k" at 7 s, wire 100 ms → ann "1 of 1\n" at 1 s, "2 of 3\n" at 4 s, "3 of 5" at 7 s; bob "1 of 1\n" at 1 s, "2 of 3\n" at 4 s, "3 of 5" at 7 s
+>run() with ann in "k" at 1 s, bob in "k" at 1 s, bob in "k" at 4 s, ann in "k" at 7 s, bob in "k" at 7 s, wire 100 ms → ann "1 of 1\n" at 1 s, "2 of 4" at 7 s; bob "1 of 1\n" at 1 s, "2 of 3\n" at 4 s, "3 of 4" at 7 s
 
 ## hostile
 A case that names people and gives a value has no one to give it to: `>run() with ann in "k" → 3` is refused, "a case that names people says what each one's device wrote, `→ ann "text"`, the parts joined by `;`: a value, a text with no name or `check` cannot say whose it is (fm3 places.md, "what a case says"; principle 7)". A person's name is a word the line reads no other way: `>run() → off "0"` is refused, "'off' cannot name a person in a case: a person's name is a word the line reads no other way, not `in`, `on`, `off`, `wire`, `check`, a feature's name or a type's (fm3 places.md, "what a case says"): `ann in "k" at 1 s`", and so is `counter` or `int` where a name stands. A case may name four people: a fifth is refused, "a case names 5 people, and a store has memory for 4 at one place: name at most 4". In a case that names people every input says whose it is: `with ann in "k", in "j"` is refused. With two people a case runs at every cut over wires that take no time: `probe zero suite/zero/counter run 'run() with ann in "k" at 1 s, bob in "k" at 2 s, ann in "k" at 3 s' --fast --server pressed` gives the case's own line, `pressed` running at the server in a context for Ann and one for Bob, each with their own `mine$`.

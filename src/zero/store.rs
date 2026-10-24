@@ -1040,9 +1040,6 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
             return Err(lex::error(file, line, format!("a case names {} people, and a store has memory for {} at one place: name at most {}", people.len(), PEOPLE, PEOPLE)));
         }
         let each = people.iter().map(|p| (p.name.clone(), parts.iter().find(|(n, _)| n == &p.name).map(|(_, e)| e.clone()).unwrap_or(Expect::Text(String::new())))).collect();
-        if wire.is_some() && people.len() > 1 {
-            return Err(lex::error(file, line, "a case about lateness names one person or none: two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"));
-        }
         let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
         return Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect: Expect::People(each), context, input, input_at, people, wire });
     }

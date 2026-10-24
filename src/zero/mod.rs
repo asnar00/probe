@@ -4,6 +4,7 @@
 //! of probe by the runner (`run.rs`). zero.md in the fm3 project is the
 //! language definition; the front end adds no semantics of its own.
 
+pub mod home;
 pub mod kinds;
 pub mod lex;
 pub mod lower;
@@ -29,6 +30,101 @@ use std::process::ExitCode;
 /// ... and a wire whose delay changes (fm3 log 289): `--wire 100 ms then
 /// 2 s at 3 s`, as many `then`s as wanted, `then gone at <time>` where
 /// the wire goes
+/// Three places over wires that take time (hop fifty-nine): `--wire ann
+/// 100 ms, bob 2 s` gives each person's wire its delay, a time alone
+/// every wire's; `--gone server 3 s to 6 s`, `--gone ann 3 s to 6 s` (her
+/// device), `--gone ann's wire 3 s to 6 s`, several joined by commas.
+/// None where neither a name after `--wire` nor `--gone` is said
+fn home_said(args: &[String]) -> Result<Option<(run::HomeSaid, Vec<usize>)>, String> {
+    let wire = args.iter().position(|a| a == "--wire");
+    let gone = args.iter().position(|a| a == "--gone");
+    let named = wire.and_then(|i| args.get(i + 1)).is_some_and(|w| w.starts_with(|c: char| c.is_ascii_alphabetic()));
+    if !named && gone.is_none() {
+        return Ok(None);
+    }
+    // the words after a flag, commas their own, and where each came from
+    let words_of = |i: usize| -> Vec<(String, usize)> {
+        let mut words = Vec::new();
+        for (k, a) in args.iter().enumerate().skip(i + 1) {
+            if a.starts_with("--") {
+                break;
+            }
+            match a.strip_suffix(',') {
+                Some(w) if !w.is_empty() => {
+                    words.push((w.to_string(), k));
+                    words.push((",".to_string(), k));
+                }
+                _ => words.push((a.clone(), k)),
+            }
+        }
+        words
+    };
+    let time = |ws: &[(String, usize)], k: usize| -> Result<(i64, usize), String> {
+        let n = ws.get(k).map(|(w, _)| w.as_str()).ok_or("a time is wanted: `3 s`, `100 ms`")?;
+        let unit = ws.get(k + 1).map(|(w, _)| w.as_str()).filter(|u| *u == "s" || *u == "ms");
+        let t = run::time_said(&match unit {
+            Some(u) => format!("{}{}", n, u),
+            None => n.to_string(),
+        })?;
+        Ok((t, k + if unit.is_some() { 2 } else { 1 }))
+    };
+    let mut said = run::HomeSaid::default();
+    let mut used = Vec::new();
+    if let Some(i) = wire {
+        used.push(i);
+        let ws = words_of(i);
+        used.extend(ws.iter().map(|(_, k)| *k));
+        let mut k = 0;
+        while k < ws.len() {
+            if ws[k].0.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                let name = ws[k].0.clone();
+                let (d, k2) = time(&ws, k + 1)?;
+                said.delays.push((name, d));
+                k = k2;
+            } else {
+                let (d, k2) = time(&ws, k)?;
+                said.delay = d;
+                k = k2;
+            }
+            match ws.get(k).map(|(w, _)| w.as_str()) {
+                Some(",") => k += 1,
+                None => {}
+                Some(w) => return Err(format!("'{}' is not a word of a wire at three places: `--wire 100 ms`, `--wire ann 100 ms, bob 2 s`", w)),
+            }
+        }
+    }
+    if let Some(i) = gone {
+        used.push(i);
+        let ws = words_of(i);
+        used.extend(ws.iter().map(|(_, k)| *k));
+        let mut k = 0;
+        while k < ws.len() {
+            let who = ws[k].0.clone();
+            let (what, name, k1) = if who == "server" {
+                ("server", String::new(), k + 1)
+            } else if let Some(n) = who.strip_suffix("'s") {
+                if ws.get(k + 1).map(|(w, _)| w.as_str()) != Some("wire") {
+                    return Err(format!("`--gone {} wire <from> to <to>` is a person's wire gone", who));
+                }
+                ("wire", n.to_string(), k + 2)
+            } else {
+                ("device", who.clone(), k + 1)
+            };
+            let (from, k2) = time(&ws, k1)?;
+            if ws.get(k2).map(|(w, _)| w.as_str()) != Some("to") {
+                return Err("something gone is said `--gone server 3 s to 6 s`, `--gone ann 3 s to 6 s`, `--gone ann's wire 3 s to 6 s`".into());
+            }
+            let (to, k3) = time(&ws, k2 + 1)?;
+            said.gone.push((what.to_string(), name, from, to));
+            k = k3;
+            if ws.get(k).map(|(w, _)| w.as_str()) == Some(",") {
+                k += 1;
+            }
+        }
+    }
+    Ok(Some((said, used)))
+}
+
 fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
     let Some(i) = args.iter().position(|a| a == "--wire") else {
         if args.iter().any(|a| a == "--choose") {
@@ -175,7 +271,7 @@ fn unknown_word(args: &[String]) -> Option<String> {
         (Some(_), Some("emit")) if args.get(2).map(String::as_str) == Some("places") => &["--server", "--then", "--wire", "--choose"],
         (Some(_), Some("emit")) => &[],
         (Some(_), Some("placement")) => &["--server", "--case", "--then", "--wire", "--choose"],
-        (Some(_), Some("run")) => &["--fast", "-t", "--server", "--then", "--wire", "--choose"],
+        (Some(_), Some("run")) => &["--fast", "-t", "--server", "--then", "--wire", "--choose", "--gone"],
         (Some(_), Some("trace")) => &["--json"],
         _ => return None,
     };
@@ -340,6 +436,28 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // ... at three places, a case that names two people or more
+            // (hop fifty-nine): `--wire ann 100 ms, bob 2 s`, `--gone ...`
+            match home_said(args) {
+                Ok(Some((said, hused))) => {
+                    let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| *a != "--fast" && *a != "-t" && !hused.contains(i)).map(|(_, a)| a) else { return usage() };
+                    return match run::run_home(Path::new(store), case, &policy, level, &said) {
+                        Ok(out) => {
+                            print!("{}", out);
+                            ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            ExitCode::FAILURE
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            }
             // ... and over a wire that takes time: `--wire <time>`
             let (wire, wused) = match wire_said(args) {
                 Ok(w) => w,

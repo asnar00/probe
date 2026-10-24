@@ -5,6 +5,7 @@
 //! features' `## testing` sections run on the chosen path through the
 //! suite's own machinery (`suite::run_calls`).
 
+use super::home;
 use super::{lower, store};
 use crate::host::site_said;
 use crate::suite::{self, Backend, Report};
@@ -910,6 +911,9 @@ fn wire_cases(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize,
 /// at the client, which is what the case compares, and what was late.
 /// None where the store has no such case by that line
 fn wire_case_run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<Option<String>, String> {
+    if let Some((text, d, ok, note, record)) = home_cases(dir, policy, Backend::Native, level, Some(which))?.into_iter().next() {
+        return Ok(Some(format!("{}\nthree places, a wire of {} from each device to the server, the home\n{}{}\n{}", text, spell_late(d), if ok { "holds" } else { "does not hold " }, note, record)));
+    }
     let got = wire_cases(dir, policy, Backend::Native, level, Some(which))?;
     let Some((text, d, shown, own, ok, note, pieces)) = got.into_iter().next() else { return Ok(None) };
     Ok(Some(format!("{}\neverything on the server, a wire of {}\n→ {}, by its own times\nshown at the client: {}{}\n{}", text.split('→').next().unwrap_or("").trim(), spell_late(d), own, shown, if ok { String::new() } else { format!("\ndoes not hold {}", note) }, late_said(&pieces))))
@@ -1032,9 +1036,229 @@ pub fn run_wire(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, ser
 /// and the time the move is said at the client
 pub fn run_wire_moved<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, server: Option<&str>, then: &[(String, i64)], wire: W) -> Result<String, String> {
     let wire: Wire = wire.into();
+    // (a case that names two people or more, hop fifty-nine: three places,
+    // the wire said every person's, `then gone at <t> ... at <t2>` the
+    // server gone from t to t2, every wire at once)
+    if server.is_none() && then.is_empty() && wire.choose.is_none() && names_two(dir, which) {
+        let mut said = HomeSaid { delay: wire.d, ..Default::default() };
+        let mut gone_at: Option<i64> = None;
+        for (t, d) in &wire.then {
+            match (*d == GONE, gone_at) {
+                (true, None) => gone_at = Some(*t),
+                (false, Some(g)) => {
+                    said.gone.push(("server".into(), String::new(), g, *t));
+                    gone_at = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(g) = gone_at {
+            said.gone.push(("server".into(), String::new(), g, GONE));
+        }
+        return run_home(dir, which, policy, level, &said);
+    }
     let ((head, shown, pieces, thrown), expect, log, homes) = wire_moved_case_said(dir, which, policy, level, Backend::Native, server, then, &wire, said_but(), None)?;
     let never = never_said(&wire, &expect, &pieces.iter().map(|p| p.text.as_str()).collect::<String>());
     Ok(format!("{}\n→ {}\n{}{}{}{}{}", head, shown, late_said(&pieces), never, thrown_said(thrown), chose_said(&wire, &log), homes))
+}
+
+/// does the case by this line name two people or more
+pub fn names_two(dir: &Path, which: &str) -> bool {
+    store::read(dir).map(|s| s.features.iter().flat_map(|f| f.cases.iter()).any(|c| c.people.len() > 1 && c.text.split('→').next().unwrap_or("").trim() == which.trim())).unwrap_or(false)
+}
+
+/// Three places over wires that take time (hop fifty-nine, `home.rs`):
+/// how a command or a case line says them. Each person's wire has a
+/// delay; a person's wire, a person's device or the server may be gone
+/// from one time to another. Names are the case's people
+#[derive(Clone, Debug, Default)]
+pub struct HomeSaid {
+    /// a delay for everyone's wire, and each person's of their own
+    pub delay: i64,
+    pub delays: Vec<(String, i64)>,
+    /// what is gone: `server`, a person's `wire`, or a person's `device`;
+    /// whose; from and to
+    pub gone: Vec<(String, String, i64, i64)>,
+}
+
+impl HomeSaid {
+    /// as `home.rs` takes it, people named by their place in the case
+    fn wires(&self, people: &[String]) -> Result<home::Wires, String> {
+        let at = |n: &str| people.iter().position(|p| p == n).ok_or_else(|| format!("'{}' is not one of the people the case names: {}", n, people.join(", ")));
+        let mut delay = vec![self.delay; 4];
+        for (n, d) in &self.delays {
+            delay[at(n)?] = *d;
+        }
+        let mut gone = Vec::new();
+        for (what, who, from, to) in &self.gone {
+            let w = match what.as_str() {
+                "server" => home::SERVER,
+                "wire" => at(who)? as i64,
+                _ => home::DEVICE + at(who)? as i64,
+            };
+            gone.push((w, *from, *to));
+        }
+        if gone.len() > 8 {
+            return Err("at most eight times something is gone".into());
+        }
+        Ok(home::Wires { delay, gone })
+    }
+
+    /// as a person reads it
+    fn said(&self) -> String {
+        let mut out = format!("a wire of {} from each device to the server", spell_late(self.delay));
+        for (n, d) in &self.delays {
+            out.push_str(&format!(", {}'s of {}", n, spell_late(*d)));
+        }
+        for (what, who, from, to) in &self.gone {
+            out.push_str(&match what.as_str() {
+                "server" => format!("; the server gone from {} to {}", store::spell_time(*from), store::spell_time(*to)),
+                "wire" => format!("; {}'s wire gone from {} to {}", who, store::spell_time(*from), store::spell_time(*to)),
+                _ => format!("; {}'s device gone from {} to {}", who, store::spell_time(*from), store::spell_time(*to)),
+            });
+        }
+        out
+    }
+}
+
+/// the store at three places over wires that take time: built for people
+/// at one place, and `home.rs`'s rewrite of it
+fn home_build(dir: &Path, policy: &ssa::Policy, level: usize) -> Result<(store::Store, lower::Lowered, String, ssa::Module, ssa::Policy), String> {
+    let mut s = store::read(dir).map_err(|e| e.to_string())?;
+    s.clock = store::Clock::Virtual;
+    s.times = true;
+    let policy = store_policy(&s, policy);
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let ir = home::rewrite(&l.ir)?;
+    if let Ok(f) = std::env::var("PROBE_ZERO_HOME_DUMP") {
+        let _ = std::fs::write(f, &ir);
+    }
+    let module = build(&ir, &policy, level)?;
+    Ok((s, l, ir, module, policy))
+}
+
+/// One case at three places over wires that take time: what each person's
+/// device wrote, by its own times, which is when it was shown, a device
+/// showing its own lines at once; and the record of the wires
+fn home_run(module: &ssa::Module, ir: &str, backend: Backend, level: usize, p: &Planned, wires: &home::Wires) -> Result<(Result<suite::Got, String>, Vec<i64>), String> {
+    let c = &p.call;
+    let call = |mode: i64| suite::Call { func: c.func.clone(), args: c.args.clone(), nrets: c.nrets, checks: checks(&c.expect), text: mode == 0, before: call_setters(&c.context, c).into_iter().chain(wires.calls()).chain([("__hw_set".to_string(), vec![0, mode])]).collect(), live: false, times: true };
+    let mut got = suite::run_calls(module, ir, backend, &[call(0), call(2)], "zero-home", level)?;
+    let log = got.pop().unwrap().map(|g| g.marks).unwrap_or_default();
+    let own = got.pop().unwrap();
+    Ok((own, log))
+}
+
+/// the record of a run at three places, as a person reads it: what reached
+/// the home late, what a screen showed that the home's order does not
+/// give, what reached a copy late, and each shared stream at the end
+fn home_said(log: &[i64], people: &[String], names: &[String], wires: &home::Wires) -> String {
+    let who = |k: i64| people.get(k as usize).cloned().unwrap_or_else(|| format!("person {}", k));
+    let mut late = Vec::new();
+    let mut kept = Vec::new();
+    let mut copies = Vec::new();
+    let mut end: Vec<(i64, i64, i64)> = Vec::new();
+    let (mut pushes, mut takes) = (0, 0);
+    for r in log.chunks(6).filter(|r| r.len() == 6) {
+        match r[0] {
+            1 => {
+                pushes += 1;
+                let (k, st, at, d, same) = (r[1], r[2], r[3], r[4], r[5]);
+                if at > st + d {
+                    late.push(format!("  {}'s push for {} reached the home at {}, {} late", who(k), store::spell_time(st), store::spell_time(at), spell_late(at - st - d)));
+                }
+                if same == 0 && !kept.iter().any(|l: &String| l.contains(&format!("{}'s screen showed its line for {} ", who(k), store::spell_time(st)))) {
+                    kept.push(format!("  {}'s screen showed its line for {} before the home had a push that sorts before it: it keeps what it showed (fm3 places.md, \"a screen already written\")", who(k), store::spell_time(st)));
+                }
+            }
+            2 => {
+                takes += 1;
+                let (k, ht, at, had, made) = (r[1], r[2], r[3], r[4], r[5]);
+                let d = wires.delay.get(k as usize).copied().unwrap_or(0);
+                if at > ht + d {
+                    copies.push(format!("  {}'s copy took the home's values of {} at {}, {} late{}", who(k), store::spell_time(ht), store::spell_time(at), spell_late(at - ht - d), if made > had { format!(", and ran again on top {} push{} of its own", made - had, if made - had == 1 { "" } else { "es" }) } else { String::new() }));
+                }
+            }
+            3 => {
+                let line = format!("  {}'s screen showed its line for {} before the home had a push that sorts before it: it keeps what it showed (fm3 places.md, \"a screen already written\")", who(r[1]), store::spell_time(r[2]));
+                if !kept.contains(&line) {
+                    kept.push(line);
+                }
+            }
+            4 => end.push((r[1], r[2], r[3])),
+            _ => {}
+        }
+    }
+    let mut out = format!("the home: {} push{} run again there, the home's values taken {} time{} at a copy\n", pushes, if pushes == 1 { "" } else { "es" }, takes, if takes == 1 { "" } else { "s" });
+    if !late.is_empty() {
+        out.push_str(&format!("late at the home:\n{}\n", late.join("\n")));
+    }
+    if !copies.is_empty() {
+        out.push_str(&format!("late at a copy:\n{}\n", copies.join("\n")));
+    }
+    if !kept.is_empty() {
+        out.push_str(&format!("kept as shown:\n{}\n", kept.join("\n")));
+    }
+    for (f, name) in names.iter().enumerate() {
+        let at: Vec<String> = end.iter().filter(|(g, _, _)| *g == f as i64).map(|(_, place, v)| if *place < 0 { format!("{} at its home, the server", v) } else { format!("{} at {}'s copy", v, who(*place)) }).collect();
+        if !at.is_empty() {
+            out.push_str(&format!("at the end: {}$ {}\n", name, at.join("; ")));
+        }
+    }
+    out
+}
+
+/// `probe zero <store> run '<case>' --wire ...` where the case names two
+/// people or more (hop fifty-nine): three places, each person's device
+/// running their lines and the server the home, over wires that take time
+pub fn run_home(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, said: &HomeSaid) -> Result<String, String> {
+    let (s, l, ir, module, policy) = home_build(dir, policy, level)?;
+    let calls = calls_of_with(&s, &l, &policy, true)?;
+    // (a case about lateness may be named without its wire, to be run
+    // over another)
+    let bare = |p: &Planned| -> String {
+        let head = p.text.split('→').next().unwrap_or("").trim();
+        match head.rfind(", wire ") {
+            Some(i) => head[..i].trim().to_string(),
+            None => head.to_string(),
+        }
+    };
+    let p = case_named(&calls, which).or_else(|| calls.iter().find(|p| bare(p) == which.trim())).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
+    let people: Vec<String> = s.features.iter().flat_map(|f| f.cases.iter()).find(|c| c.text == p.text).map(|c| c.people.iter().map(|q| q.name.clone()).collect()).unwrap_or_default();
+    let wires = said.wires(&people)?;
+    let (own, log) = home_run(&module, &ir, Backend::Native, level, p, &wires)?;
+    let g = own?;
+    let store::Expect::People(each) = &p.call.expect else { return Err("a case at three places names its people".into()) };
+    let parts = people_got(&g, each.len());
+    let shown: Vec<String> = each.iter().zip(&parts).map(|((name, _), g)| format!("{} {}", name, store::spell_timed(&pieces(g)))).collect();
+    Ok(format!("{}\nthree places: {}, and the server, the home; {}\n→ {}\n{}", p.text.split('→').next().unwrap_or("").trim(), people.iter().map(|n| format!("{}'s device", n)).collect::<Vec<_>>().join(", "), said.said(), shown.join("; "), home_said(&log, &people, &home::shared_names(&ir), &wires)))
+}
+
+/// The cases of a store that name two people or more and say `with wire`
+/// (hop fifty-nine): each run at three places over that wire and compared
+/// by each person's own times, which are when each piece was shown
+fn home_cases(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, which: Option<&str>) -> Result<Vec<(String, i64, bool, String, String)>, String> {
+    let s = store::read(sdir).map_err(|e| e.to_string())?;
+    if !s.features.iter().any(|f| f.cases.iter().any(|c| c.wire.is_some() && c.people.len() > 1)) {
+        return Ok(Vec::new());
+    }
+    let (s, l, ir, module, policy) = home_build(sdir, policy, level)?;
+    let calls = calls_of_with(&s, &l, &policy, true)?;
+    let mut out = Vec::new();
+    for c in s.features.iter().flat_map(|f| f.cases.iter()).filter(|c| c.people.len() > 1) {
+        let Some(d) = c.wire else { continue };
+        if which.is_some_and(|w| c.text.split('→').next().unwrap_or("").trim() != w.trim()) {
+            continue;
+        }
+        let Some(p) = calls.iter().find(|p| p.text == c.text) else { continue };
+        let people: Vec<String> = c.people.iter().map(|q| q.name.clone()).collect();
+        let said = HomeSaid { delay: d, ..Default::default() };
+        let wires = said.wires(&people)?;
+        let (own, log) = home_run(&module, &ir, backend, level, p, &wires)?;
+        let (ok, note) = judge(&p.call.expect, own);
+        out.push((c.text.clone(), d, ok, note, home_said(&log, &people, &home::shared_names(&ir), &wires)));
+    }
+    Ok(out)
 }
 
 /// the switches a test may set (`__wire_but`), said for `run` and
@@ -1594,6 +1818,21 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 ncases += got.len();
                 for (text, d, _, _, ok, note, _) in got {
                     report.case(ok, &name, &format!("{} [everything on the server, a wire of {}]", text, spell_late(d)), &note);
+                }
+            }
+            Err(e) => {
+                report.failed += 1;
+                report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
+            }
+        }
+        // ... and those that name two people or more (hop fifty-nine): at
+        // three places, each device running its person's lines and the
+        // server the home, a wire of that delay from each device
+        match home_cases(sdir, &policy, backend, level, None) {
+            Ok(got) => {
+                ncases += got.len();
+                for (text, d, ok, note, _) in got {
+                    report.case(ok, &name, &format!("{} [three places, a wire of {} from each device]", text, spell_late(d)), &note);
                 }
             }
             Err(e) => {
@@ -8123,8 +8362,44 @@ mod tests {
         refused("run() with wire 100 ms, in \"k\" at 1 s → \"1 s\" at 1 s", "`wire <time>` is the last part of a case's `with` clause");
         refused("run() with in \"k\" at 1 s, wire fast → \"1 s\" at 1 s", "a case about lateness says its wire's delay as the command line does");
         refused("run() with in \"k\" at 1 s, wire 100 ms → 3", "a case about lateness says what its text was and when each piece was shown at the client");
-        refused("run() with ann in \"k\" at 1 s, wire 100 ms → ann \"1\" at 1.2 s; bob \"1\" at 1.2 s", "a case about lateness names one person or none");
+        // (two people over a wire are three places from hop fifty-nine)
+        assert!(store::parse_case_for_test("run() with ann in \"k\" at 1 s, wire 100 ms → ann \"1\" at 1.2 s; bob \"1\" at 1.2 s", &types).is_ok());
         assert_eq!(store::parse_case_for_test("run() with in \"k\" at 1 s, wire 2 s → \"1\" at 3 s", &types).unwrap().wire, Some(2_000_000));
+    }
+
+    /// Three places over wires that take time (hop fifty-nine; fm3
+    /// places.md, "two pushes at once: the line is the merge" and "losing
+    /// a wire or a place"): each device runs its person's lines and the
+    /// server is the home; what crosses is the push, run again at the home
+    /// in its order, by time and then by place; the counter with any place
+    /// or wire lost gives the case's line, every copy the home's at the end
+    #[test]
+    fn three_places_over_a_wire() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let counter = Path::new("suite/zero/counter");
+        let both = run_home(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 1 s", &native, opt::MAX_LEVEL, &HomeSaid { delay: 100_000, ..Default::default() }).unwrap();
+        assert!(both.contains("→ ann \"1 of 1\" at 1 s; bob \"1 of 1\" at 1 s\n") && both.contains("at the end: all$ 2 at its home, the server; 2 at ann's copy; 2 at bob's copy\n") && both.contains("bob's screen showed its line for 1 s before the home had a push that sorts before it"), "{}", both);
+        let six = "run() with ann in \"k\" at 1 s, bob in \"k\" at 1 s, ann in \"k\" at 4 s, bob in \"k\" at 4 s, ann in \"k\" at 7 s, bob in \"k\" at 7 s";
+        let line = "→ ann \"1 of 1\\n\" at 1 s, \"2 of 3\\n\" at 4 s, \"3 of 5\" at 7 s; bob \"1 of 1\\n\" at 1 s, \"2 of 3\\n\" at 4 s, \"3 of 5\" at 7 s\n";
+        for (what, who) in [("server", ""), ("wire", "ann"), ("wire", "bob")] {
+            let said = HomeSaid { delay: 100_000, gone: vec![(what.to_string(), who.to_string(), 3_000_000, 6_000_000)], ..Default::default() };
+            let got = run_home(counter, six, &native, opt::MAX_LEVEL, &said).unwrap();
+            assert!(got.contains(line) && got.contains("at the end: all$ 6 at its home, the server; 6 at ann's copy; 6 at bob's copy\n") && got.contains("push for 4 s reached the home at 6.1 s, 2 s late"), "{} {}: {}", what, who, got);
+        }
+        // a device gone: its key lost, its copy caught up from the home
+        let said = HomeSaid { delay: 100_000, gone: vec![("device".into(), "ann".into(), 3_000_000, 6_000_000)], ..Default::default() };
+        let got = run_home(counter, six, &native, opt::MAX_LEVEL, &said).unwrap();
+        assert!(got.contains("→ ann \"1 of 1\\n\" at 1 s, \"2 of 4\" at 7 s; bob \"1 of 1\\n\" at 1 s, \"2 of 3\\n\" at 4 s, \"3 of 4\" at 7 s\n") && got.contains("ann's copy took the home's values of 4.1 s at 6.1 s, 1.9 s late"), "{}", got);
+        // the line is the merge, and a push that arrives late but sorts
+        // before another is put before it
+        let said = HomeSaid { delay: 100_000, gone: vec![("wire".into(), "ann".into(), 500_000, 3_000_000)], ..Default::default() };
+        let got = run_home(Path::new("suite/zero/merge"), "run() with ann in \"3\" at 1 s, bob in \"5\" at 1 s, ann in \"4\" at 2 s", &native, opt::MAX_LEVEL, &said).unwrap();
+        for want in ["at the end: size$ 4 at its home, the server; 4 at ann's copy; 4 at bob's copy\n", "at the end: count$ 3 at its home", "at the end: best$ 5 at its home, the server; 5 at ann's copy; 5 at bob's copy\n", "ran again on top 2 pushes of its own"] {
+            assert!(got.contains(want), "{}: {}", want, got);
+        }
+        // what is not built yet, by name
+        let e = run_home(Path::new("suite/zero/chat"), "run() with ann in \"hi\" at 1 s", &native, opt::MAX_LEVEL, &HomeSaid { delay: 100_000, ..Default::default() }).unwrap_err();
+        assert!(e.contains("'said$' is a stored stream that is shared"), "{}", e);
     }
 
     /// A case names people (fm3 places.md, "what a case says"; hop
