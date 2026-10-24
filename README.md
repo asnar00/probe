@@ -350,6 +350,14 @@ out$ << said$ forever
 
 At two places (hop fifty-eight) such a store runs with one person: its placed build is one device's, each place a context of it, and a group's or everyone's stream is a field of both, **its home the server**, the place every other place has a wire to and the one without devices, and a copy at the client; where the cut puts nothing on the server the program is at one place and the client is the home. `placement` says so under the units, `all$  a group's  its home the server, ...`, and a `user` stream, one person with one device, is placed as the device's own. What the client writes of a shared stream is carried to its home; a push into a stored one is made again there, and one at the server is made again at the client where a line there reads it. An item of a shared stream with no rate carries **its home's time**: the later of the push's own and the world's clock when the push reached the server (`suite/zero/stamp`: a key at 1 s over a wire of 100 ms with everything on the server writes `1.1 s`, with nothing on the server `1 s`). When the chooser takes the server's part it takes being the home with it, and gives it back with the part; `run` and `placement` over a wire end with each shared stream's value at its home and at the copy. A case that names two people or more is passed over at every cut, in one line: two people over a wire are the hop after fifty-eight.
 
+**A case about lateness says `with wire <time>`**, the last part of its `with` clause, the time spelled as the command line spells it, and is the only kind of case a wire changes. It runs with everything on the server over that wire, and the times on its right are when each piece was shown at the client by the world's clock; it runs at no other cut, and the plain cases still run at every cut with wires that take no time:
+
+```
+>launch() with in "k" at 3.5 s, wire 100 ms → "10\n" at 200 ms, "9\n8\n7\n" at 1 hz from 1 s, "10\n" at 3.7 s, "9\n8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 4.5 s
+```
+
+`suite/zero/restart/restart/restart.md`, and `probe zero suite/zero/restart run '<the case>'` prints its own times, when each piece was shown, and what was late.
+
 The words after a push's items say how often it happens (fm3 question 79; `suite/zero/words`): `if (c)` first, only where the condition holds, and then one of `(n) times`, `while (c)`, `until (c)` and `forever`.
 
 ```

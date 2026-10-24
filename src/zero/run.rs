@@ -251,9 +251,17 @@ pub(super) struct Planned {
 /// a case's literal arguments are typed at the width the store is
 /// built at (log 52)
 pub(super) fn calls_of(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy) -> Result<Vec<Planned>, String> {
+    calls_of_with(s, l, policy, false)
+}
+
+/// ... and with the cases about lateness too, `with ..., wire 100 ms`
+/// (hop fifty-eight), where `wired`: such a case is run only with
+/// everything on the server over its wire, by `wire_cases`, and never in a
+/// plain run or at another cut
+pub(super) fn calls_of_with(s: &store::Store, l: &lower::Lowered, policy: &ssa::Policy, wired: bool) -> Result<Vec<Planned>, String> {
     let mut out = Vec::new();
     for (rank, f) in s.features.iter().enumerate() {
-        for c in &f.cases {
+        for c in f.cases.iter().filter(|c| wired || c.wire.is_none()) {
             // (a placed build has one person, hop fifty-eight: a case
             // that names two is passed over, and `two_named` counts it)
             if s.places && c.people.len() > 1 {
@@ -627,6 +635,13 @@ pub fn run_cut(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, fast
     };
     let calls = calls_of(&s, &l, policy)?;
     let at = case_at(&calls, which);
+    // (a case about lateness, hop fifty-eight: run with everything on the
+    // server over its wire, and what it says is when each piece was shown)
+    if at.is_none() && server.is_none() && then.is_empty() {
+        if let Some(said) = wire_case_run(dir, which, policy, level)? {
+            return Ok(said);
+        }
+    }
     // (a case that names two people, at a cut: refused by name, hop fifty-eight)
     if at.is_none() && s.places {
         two_named_refused(&s, which)?;
@@ -825,6 +840,79 @@ fn wired(dir: &Path) -> Result<store::Store, String> {
     s.wire = true;
     s.times = true;
     Ok(s)
+}
+
+/// What a case about lateness gave (hop fifty-eight; fm3 places.md, "what
+/// a case says"): its text with when each piece was shown at the client,
+/// by the world's clock, the last piece's newline dropped as a case's is
+fn shown_timed(pieces: &[Shown]) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = pieces.iter().map(|p| (p.text.clone(), p.shown)).collect();
+    if let Some((last, _)) = out.last_mut() {
+        if last.ends_with('\n') {
+            last.pop();
+        }
+    }
+    store::merge_timed(out)
+}
+
+/// Each case of a store that says `with ..., wire <time>` (hop fifty-eight),
+/// run as the session decided under principle 4 (fm3 questions.md, "what the
+/// session decides for hop fifty-eight"): with everything on the server over
+/// that wire, its times compared with when each piece was shown at the
+/// client. Each gives (the case, its wire, what it gave, the case's own
+/// times, whether it holds, the note)
+#[allow(clippy::type_complexity)]
+fn wire_cases(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, which: Option<&str>) -> Result<Vec<(String, i64, String, String, bool, String, Vec<Shown>)>, String> {
+    let s = wired(sdir)?;
+    if !s.features.iter().any(|f| f.cases.iter().any(|c| c.wire.is_some())) {
+        return Ok(Vec::new());
+    }
+    let policy = &store_policy(&s, policy);
+    let l = lower::lower(&s).map_err(|e| e.to_string())?;
+    let placed = l.placed.as_ref().ok_or("the store was not placed")?;
+    let all = placed.all();
+    if let Some(why) = placed.refused(&all) {
+        return Err(format!("a case about lateness runs with everything on the server, and that cut cannot be run yet: {}", why));
+    }
+    let cut = placed.cut(&all).before;
+    let wired_at: Vec<(String, i64)> = s.features.iter().flat_map(|f| f.cases.iter()).filter_map(|c| c.wire.map(|d| (c.text.clone(), d))).collect();
+    let calls: Vec<Planned> = calls_of_with(&s, &l, policy, true)?.into_iter().filter(|p| wired_at.iter().any(|(t, _)| *t == p.text)).collect();
+    let module = build(&l.ir, policy, level)?;
+    let name = sdir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let mut out = Vec::new();
+    for p in &calls {
+        if which.is_some_and(|w| case_named(std::slice::from_ref(p), w).is_none()) {
+            continue;
+        }
+        let d = wired_at.iter().find(|(t, _)| *t == p.text).map(|(_, d)| *d).unwrap_or(0);
+        let (own, pieces, _, _) = wire_runs(&module, &l, backend, level, &format!("{}-lateness", name), &cut, d, 0, p, &p.call.context)?;
+        let (gave, own_said, ok, note) = match (&p.call.expect, own) {
+            (_, Err(e)) => (String::new(), String::new(), false, format!("({})", e)),
+            (store::Expect::Timed(want), Ok(g)) => {
+                let shown = shown_timed(&pieces);
+                let said = store::spell_timed(&shown);
+                let ok = &shown == want;
+                (said.clone(), store::spell_timed(&self::pieces(&g)), ok, if ok { String::new() } else { format!("(shown at the client {})", said) })
+            }
+            (e, Ok(g)) => {
+                let own = store::spell_timed(&self::pieces(&g));
+                let (ok, note) = judge(e, Ok(g));
+                (own.clone(), own, ok, note)
+            }
+        };
+        out.push((p.text.clone(), d, gave, own_said, ok, note, pieces));
+    }
+    Ok(out)
+}
+
+/// `probe zero <store> run '<case>'` for a case about lateness (hop
+/// fifty-eight): what it gave by its own times, when each piece was shown
+/// at the client, which is what the case compares, and what was late.
+/// None where the store has no such case by that line
+fn wire_case_run(dir: &Path, which: &str, policy: &ssa::Policy, level: usize) -> Result<Option<String>, String> {
+    let got = wire_cases(dir, policy, Backend::Native, level, Some(which))?;
+    let Some((text, d, shown, own, ok, note, pieces)) = got.into_iter().next() else { return Ok(None) };
+    Ok(Some(format!("{}\neverything on the server, a wire of {}\n→ {}, by its own times\nshown at the client: {}{}\n{}", text.split('→').next().unwrap_or("").trim(), spell_late(d), own, shown, if ok { String::new() } else { format!("\ndoes not hold {}", note) }, late_said(&pieces))))
 }
 
 /// a time as a lateness is said: `200 ms`, `1.5 s`
@@ -1085,7 +1173,7 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
         }
     };
     cut.extend(wire.calls());
-    let calls = calls_of(&s, &l, policy)?;
+    let calls = calls_of_with(&s, &l, policy, true)?;
     if case_named(&calls, which).is_none() {
         two_named_refused(&s, which)?;
     }
@@ -1181,7 +1269,7 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
     let placed = l.placed.as_ref().ok_or("the store was not placed")?;
     let (first, later) = cuts_named(placed, server, then)?;
     let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let calls = calls_of(&s, &l, policy)?;
+    let calls = calls_of_with(&s, &l, policy, true)?;
     let cases: Vec<String> = calls.iter().map(|c| c.call.func.trim_start_matches("__whole_").trim_start_matches("__said_").to_string()).collect();
     // the table as it is, of the build whose wire takes no time: what
     // crosses is the program's and the cut's, whatever the wire
@@ -1498,6 +1586,21 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                 }
             })
             .collect();
+        // the cases about lateness (hop fifty-eight): each run with
+        // everything on the server over its wire, by when each piece was
+        // shown at the client
+        match wire_cases(sdir, &policy, backend, level, None) {
+            Ok(got) => {
+                ncases += got.len();
+                for (text, d, _, _, ok, note, _) in got {
+                    report.case(ok, &name, &format!("{} [everything on the server, a wire of {}]", text, spell_late(d)), &note);
+                }
+            }
+            Err(e) => {
+                report.failed += 1;
+                report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
+            }
+        }
         if scalls.is_empty() {
             continue;
         }
@@ -7974,8 +8077,9 @@ mod tests {
     /// where the cut puts anything there, the client otherwise, and the
     /// placement says so; the home stamps an item with no rate with its
     /// own time, when the push reached it; the home goes with the server's
-    /// part when the client takes it; and a case that names two people is
-    /// refused at a cut
+    /// part when the client takes it; a case that names two people is
+    /// refused at a cut; and a case says `with wire`, the last part of its
+    /// `with` clause, and is run with everything on the server
     #[test]
     fn a_shared_stream_has_a_home_at_the_server() {
         let native = suite::backend_policy(Backend::Native).unwrap();
@@ -8003,6 +8107,19 @@ mod tests {
         // two people at a cut
         let e = run_cut(counter, "run() with ann in \"k\" at 1 s, bob in \"k\" at 2 s, ann in \"k\" at 3 s", &native, opt::MAX_LEVEL, true, Some("all"), &[]).unwrap_err();
         assert!(e.contains("counter/counter.md:") && e.ends_with(": a case here names two people or more, and two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"), "{}", e);
+        // a case about lateness
+        let restart = wire_case_run(Path::new("suite/zero/restart"), "launch() with in \"k\" at 3.5 s, wire 100 ms", &native, opt::MAX_LEVEL).unwrap().unwrap();
+        assert!(restart.contains("shown at the client: \"10\\n\" at 200 ms, \"9\\n8\\n7\\n\" at 1 hz from 1 s, \"10\\n\" at 3.7 s,") && !restart.contains("does not hold"), "{}", restart);
+        let types = std::collections::HashSet::new();
+        let refused = |line: &str, what: &str| {
+            let e = store::parse_case_for_test(line, &types).err().expect("refused").to_string();
+            assert!(e.contains(what), "{}: {}", line, e);
+        };
+        refused("run() with wire 100 ms, in \"k\" at 1 s → \"1 s\" at 1 s", "`wire <time>` is the last part of a case's `with` clause");
+        refused("run() with in \"k\" at 1 s, wire fast → \"1 s\" at 1 s", "a case about lateness says its wire's delay as the command line does");
+        refused("run() with in \"k\" at 1 s, wire 100 ms → 3", "a case about lateness says what its text was and when each piece was shown at the client");
+        refused("run() with ann in \"k\" at 1 s, wire 100 ms → ann \"1\" at 1.2 s; bob \"1\" at 1.2 s", "a case about lateness names one person or none");
+        assert_eq!(store::parse_case_for_test("run() with in \"k\" at 1 s, wire 2 s → \"1\" at 3 s", &types).unwrap().wire, Some(2_000_000));
     }
 
     /// A case names people (fm3 places.md, "what a case says"; hop

@@ -20,7 +20,7 @@ Ann's second line reads `2 of 3`: Bob's press is in `all$`, which they share, an
 
 Everyone a case names is one person with one device, and all of them are in one group. At one place, on one clock, a push into `all$` is the push of the line, and how two pushes combine is what the line says, `all$ << all$ + 1`, a sum (fm3 places.md, "the line is the merge").
 
-At two places, the client and the server, `all$` has a home: the server, the place every other place has a wire to and the one without devices. The client holds a copy. `mine$` has no home of its own: it is the device's, and is wherever the lines that use it are. One person at the client, with everything on the server and a wire of 100 ms between them, presses a key at 1 s, at 4 s and at 7 s. Each line comes back to the client 200 ms after its key:
+At two places, the client and the server, `all$` has a home: the server, the place every other place has a wire to and the one without devices. The client holds a copy. `mine$` has no home of its own: it is the device's, and is wherever the lines that use it are. One person at the client, with everything on the server and a wire of 100 ms between them, presses a key at 1 s, at 4 s and at 7 s. Each line comes back to the client 200 ms after its key, and the case that says so says `with wire 100 ms`:
 
     world    the client            the server, the home of all$
     1.0 s    a key
@@ -41,10 +41,12 @@ The home can be lost. When the wire goes, from 3 s to 6 s, the client takes the 
 - Each person's screen is their own: what one person's device writes is on their screen alone.
 - A case that names nobody is one person.
 - At two places a group's stream has its home at the server, and the client holds a copy. A case runs with one person at two places; two people over a wire are the hop after fifty-eight.
+- A case about a wire that takes time says `with wire <time>`. It runs with everything on the server over that wire, and its times are when each piece is shown at the client.
 
 ## testing
 >run() with in "k" at 1 s, in "k" at 2 s → "1 of 1\n" at 1 s, "2 of 2" at 2 s
 >run() with in "k" at 1 s, in "k" at 4 s, in "k" at 7 s → "1 of 1\n" at 1 s, "2 of 2\n" at 4 s, "3 of 3" at 7 s
+>run() with in "k" at 1 s, in "k" at 4 s, in "k" at 7 s, wire 100 ms → "1 of 1\n" at 1.2 s, "2 of 2\n" at 4.2 s, "3 of 3" at 7.2 s
 >run() with ann in "k" at 1 s, bob in "k" at 2 s, ann in "k" at 3 s → ann "1 of 1\n" at 1 s, "2 of 3" at 3 s; bob "1 of 2" at 2 s
 >run() with ann in "k" at 1 s, bob in "k" at 1 s → ann "1 of 1" at 1 s; bob "1 of 2" at 1 s
 >run() with ann in "kk" at 1 s → ann "1 of 1\n2 of 2" at 1 s; bob ""

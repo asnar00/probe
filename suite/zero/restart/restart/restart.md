@@ -21,6 +21,7 @@ Hop 37 (fm3 questions 52, 53 and 121, log 220): `touchstones.md`'s `restart`, as
 - A second key while the launch the first key began is still counting ends that one too: three countdowns, the first ended at 3.5 s after its 7, the second at 5 s after its 9, the third run to its `liftoff` at 15 s. An ended activity ends whole, back to where it was started: the second launch's `n << 1` never happens, and nothing is beneath anything, each launch being left at every step and gone on with when it is next due (fm3 question 135, log 232).
 - A key after `liftoff` ends nothing: the second launch is a launch of its own.
 - With no key, `restart i$` at 0 s restarts a stream nothing was pushing into, and the countdown is hello's.
+- Over a wire of 100 ms with everything on the server, the case that says so, `with wire 100 ms`, gives when each piece is shown at the client: the first 10 at 200 ms, the call there and the 10 back; the 9, 8 and 7 at their own times, the server having worked them out ahead; the second 10 at 3.7 s, the key there and the 10 back; and the rest at their own times again. A case about lateness runs with everything on the server, and at no other cut (fm3 places.md, "what a case says").
 - `launches` is wired with a stream to fill, `int seen$ = launches (in$)`, a function of one character applied to the input's name: the form the suite has for a task over the input. A line that says "when a key arrives, do this" with nothing to fill is not ruled, and `touchstones.md`'s `watch(in$)` on a line of its own is not a form the language has.
 
 ## testing
@@ -29,3 +30,4 @@ Hop 37 (fm3 questions 52, 53 and 121, log 220): `touchstones.md`'s `restart`, as
 >launch() with in "k" at 4 s → "10\n9\n8\n7\n" at 1 hz, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz from 4 s, "liftoff" at 14 s
 >launch() with in "k" at 3.5 s, in "k" at 5 s → "10\n9\n8\n7\n" at 1 hz, "10\n9\n" at 1 hz from 3.5 s, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz from 5 s, "liftoff" at 15 s
 >launch() with in "k" at 12 s → "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz, "liftoff" at 10 s, "10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n" at 1 hz from 12 s, "liftoff" at 22 s
+>launch() with in "k" at 3.5 s, wire 100 ms → "10\n" at 200 ms, "9\n8\n7\n" at 1 hz from 1 s, "10\n" at 3.7 s, "9\n8\n7\n6\n5\n4\n3\n2\n1\nliftoff" at 1 hz from 4.5 s

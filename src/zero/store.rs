@@ -216,6 +216,12 @@ pub struct Case {
     /// named is one person with one device, all in one group. Empty
     /// where the case names nobody, who is one person as before
     pub people: Vec<Person>,
+    /// a case about lateness (hop fifty-eight; fm3 places.md, "what a case
+    /// says", ruled 24 October 2026): `with ..., wire 100 ms`, the wire's
+    /// delay in the clock's steps. Such a case runs with everything on the
+    /// server over that wire, and its times are when each piece is shown
+    /// at the client; it is the only kind of case a wire changes
+    pub wire: Option<i64>,
 }
 
 /// one person a case names: the name, and the input the case gives
@@ -272,6 +278,10 @@ pub fn period(hz: i64) -> i64 {
 const TIMED_INPUT: &str = "a timed input is a text and the time it arrives, `in \"k\" at 3.5 s` or `at 500 ms`; several are joined by commas, in the order they arrive";
 
 /// the shape of a timed result, for a refusal
+/// how a case says its wire (hop fifty-eight), and where
+const WIRE_SHAPE: &str = "a case about lateness says its wire's delay as the command line does, `wire 100 ms` or `wire 2 s`, the last part of its `with` clause (fm3 places.md, \"what a case says\")";
+const WIRE_LAST: &str = "`wire <time>` is the last part of a case's `with` clause, after its inputs and switches, and a case has one (fm3 places.md, \"what a case says\"): `>launch() with in \"k\" at 3.5 s, wire 100 ms → ...`";
+
 const TIMED_SHAPE: &str = "a timed result is every piece of the output in order, each `\"text\" at <n> s` or `<n> ms`, or `\"text\" at <n> hz` for its lines one a step, with `from <n> s` where they do not start at 0 s, joined by commas: `\"3\\n2\\n1\\n\" at 1 hz, \"liftoff\" at 3 s`";
 
 /// a time as a case writes it: whole seconds as `3 s`, a whole number
@@ -871,6 +881,12 @@ fn read_prose(name: &str, prose: &str, file: &str, types: &HashSet<String>, code
 /// `"10\n9\n" at 1 hz`, or `check` (the call must trap); the `with`
 /// clause after the call's `)` names the context (log 43) and the
 /// input the runner pushes into `in$` (log 62)
+/// a case line read alone, for a test (hop fifty-eight)
+#[cfg(test)]
+pub fn parse_case_for_test(text: &str, types: &HashSet<String>) -> Result<Case, Error> {
+    parse_case(text, "x.md", 1, types)
+}
+
 fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> Result<Case, Error> {
     let (call, expect) = text
         .split_once('→')
@@ -880,6 +896,7 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
     let mut input = None;
     let mut input_at: Vec<(String, i64)> = Vec::new();
     let mut people: Vec<Person> = Vec::new();
+    let mut wire: Option<i64> = None;
     // a name a case may give a person: a word that is no word the line
     // reads otherwise, and no type's
     let named = |name: &str| -> Result<(), Error> {
@@ -908,7 +925,16 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
             lex::lex_line(call[i + 7..].trim(), line, file, &mut toks)?;
             let toks: Vec<lex::Tok> = toks.into_iter().map(|t| t.tok).collect();
             for part in toks.split(|t| matches!(t, lex::Tok::Sym(","))) {
+                // `wire <time>` is the clause's last part, one a case (hop
+                // fifty-eight): after the inputs and the switches
+                if wire.is_some() {
+                    return Err(lex::error(file, line, WIRE_LAST));
+                }
                 match part {
+                    [lex::Tok::Word(w), n, lex::Tok::Word(unit)] if w == "wire" => {
+                        wire = Some(input_time(n, unit).map_err(|_| lex::error(file, line, WIRE_SHAPE))?);
+                    }
+                    [lex::Tok::Word(w), ..] if w == "wire" => return Err(lex::error(file, line, WIRE_SHAPE)),
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "off" => context.push((name.clone(), false)),
                     [lex::Tok::Word(name), lex::Tok::Word(w)] if w == "on" => context.push((name.clone(), true)),
                     // an input with a time (question 53, fm3 log 220):
@@ -1014,8 +1040,11 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
             return Err(lex::error(file, line, format!("a case names {} people, and a store has memory for {} at one place: name at most {}", people.len(), PEOPLE, PEOPLE)));
         }
         let each = people.iter().map(|p| (p.name.clone(), parts.iter().find(|(n, _)| n == &p.name).map(|(_, e)| e.clone()).unwrap_or(Expect::Text(String::new())))).collect();
+        if wire.is_some() && people.len() > 1 {
+            return Err(lex::error(file, line, "a case about lateness names one person or none: two people over a wire are the hop after fifty-eight (fm3 places.md; hop-58.md)"));
+        }
         let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-        return Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect: Expect::People(each), context, input, input_at, people });
+        return Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect: Expect::People(each), context, input, input_at, people, wire });
     }
     let expect = if expect == "check" {
         Expect::Check
@@ -1085,7 +1114,12 @@ fn parse_case(text: &str, file: &str, line: usize, types: &HashSet<String>) -> R
         }
     };
     let call_expr = syntax::parse_call(call.trim(), file, line, types)?;
-    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input, input_at, people })
+    // (a case about lateness says what was shown, hop fifty-eight: a
+    // value or a failed check is no wire's)
+    if wire.is_some() && !matches!(expect, Expect::Timed(_) | Expect::Text(_)) {
+        return Err(lex::error(file, line, "a case about lateness says what its text was and when each piece was shown at the client, `→ \"10\\n\" at 200 ms`: a value or a failed check is the same over any wire, and is said by a case with no `wire` (fm3 places.md, point 4)"));
+    }
+    Ok(Case { line, text: text.trim().to_string(), call: call_expr, expect, context, input, input_at, people, wire })
 }
 
 /// the shape of a person's part of a result, for a refusal
