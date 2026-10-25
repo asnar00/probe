@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### kernel.rs: the bootstrap's arena holds a frame of 32 a side, not a few thousand items — `5ae4221` · 2026-10-25
+
+A comment in `src/zero/kernel.rs` and the entry for `9e440ea` below said the bootstrap's 64 KB arena held a frame of a few thousand items and failed at 32 a side; measured, `frame (32, a)` fits it and `frame (64, a)` fails the arena's check, which is why the kernel form's CPU build has 16 MB. Both now say so; no code changed.
+
+---
+
 ### zero: the triangle's kernel on WebGPU under cargo test, and the kernel form in the README — `49f2a57` · 2026-10-25
 
 Hop sixty-two, part 5. `zero::kernel::tests::triangle_on_webgpu_is_the_cpus` runs `frame (16, 0.5)` of `suite/zero/triangle` through the kernel form on WebGPU in headless Chrome and asserts all 256 words the same as the CPU's loop, 3.5 s, not ignored. The README's `zero` section has the kernel form: `frame`'s one line quoted from the store, what `probe zero <store> kernel '<call>' --wgsl|--air` builds and runs, and what it printed. (The entry for `5a97bee` below said the GPUs' dispatch hardly grows with the pixels; Metal's grows about sixfold, and it now says so.)
