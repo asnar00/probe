@@ -294,3 +294,15 @@ pub fn compare(dir: &Path, text: &str, gpu: Gpu, policy: &ssa::Policy, level: us
     let same = (0..cpu.len()).filter(|&k| got.get(k) == Some(&cpu[k])).count();
     Ok(Compared { call: text.trim().to_string(), gpu, words: got.len(), first_differing, same, dispatch_ms, whole_ms, cpu_ms, wgsl_lines })
 }
+
+#[cfg(test)]
+mod tests {
+    /// the triangle's frame at 16 a side made by its kernel on WebGPU in
+    /// headless Chrome, and the same as the CPU's loop, word for word
+    #[test]
+    fn triangle_on_webgpu_is_the_cpus() {
+        let policy = crate::host::backend_policy(crate::suite::Backend::Native).unwrap();
+        let c = super::compare(std::path::Path::new("suite/zero/triangle"), "frame (16, 0.5)", super::Gpu::Wgsl, &policy, crate::opt::MAX_LEVEL).expect("the kernel form runs");
+        assert_eq!((c.words, c.same, c.first_differing), (256, 256, None), "\n{}", c.said());
+    }
+}

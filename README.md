@@ -283,6 +283,25 @@ cargo run -- count suite/zero/lex-zeroic.expected.ssa two_arrivals --after=__zer
 cargo run -- zero meter suite/zero                 # the lines of each store that use a non-zeroic form, and the total
 ```
 
+**The kernel form** (fm3 question 211, `triangle.md` step two). A frame is an array of colours, a pixel an ordinary function of its place, and the frame that function applied across every place, the rank rule (fm3 question 77), with nothing in the program that says GPU:
+
+```
+on (uint32 px[]) << frame (int side, float angle)
+    px[] << pixel ([0 to side * side], side, angle)
+```
+
+`suite/zero/triangle/triangle/triangle.zero:37-38`. `probe zero <store> kernel '<call>' --wgsl` reads the called function's one line for the function applied across the range and what each application is handed, adds to the store's lowered IR a `__kernel(mem, area, id)` that calls it for item `id` with the call's values (a word each in the data image), prints it with `emit_wgsl.rs` under the air platform's policy and runs it with `tools/driver_webgpu.js`, a thread a pixel; then it compares the area word for word with the CPU's frame, the same function as `lower.rs` makes it, run on the JIT. `--air` runs the same module through Metal. Each time is the least of five:
+
+```sh
+cargo run --release -- zero suite/zero/triangle kernel 'frame (64, 0.5)' 'frame (256, 0.5)' --wgsl --air
+#   frame (64, 0.5): 4096 pixels on WebGPU, 4096 the same as the CPU's
+#     WebGPU (1011 lines of WGSL): the kernel's dispatch 0.30 ms (the least of five), the whole run 2538 ms with Chrome's start; the CPU's loop 0.37 ms (the least of five)
+#   ...
+#   frame (256, 0.5): 65536 pixels on Metal, 65536 the same as the CPU's
+```
+
+The WGSL is left in `target/wgsl/<store>-kernel.wgsl` to read. What the applied function reaches must be something the emitter prints: the triangle's `pixel` reaches only its arguments and functions of numbers, and splits its place into row and column through `float`, since a division of two 64-bit integers is refused on WebGPU.
+
 A whole-number literal is held to the type it is given to (fm3 log 173): `uint8 low = 300` is refused naming its line and that a `uint8` holds 0 to 255, and a literal given to an abstract `int` is refused under the products whose `int` cannot hold it, the width reaching the front end where a case is resolved. A conversion is a type applied to a value, `float(n)`, `int(x)`, `uint8(300)`, and none is refused. A `time` is written out as the language reads it, to the nanosecond, in the largest unit in which it is at least 1; with `time t = 250 ms` this writes `250 ms`, `2.5 s`, `10 s`, `333.333333 ms` and `-250 ms`:
 
 ```
