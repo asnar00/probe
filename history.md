@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the triangle's kernel on WebGPU under cargo test, and the kernel form in the README — `49f2a57` · 2026-10-25
+
+Hop sixty-two, part 5. `zero::kernel::tests::triangle_on_webgpu_is_the_cpus` runs `frame (16, 0.5)` of `suite/zero/triangle` through the kernel form on WebGPU in headless Chrome and asserts all 256 words the same as the CPU's loop, 3.5 s, not ignored. The README's `zero` section has the kernel form: `frame`'s one line quoted from the store, what `probe zero <store> kernel '<call>' --wgsl|--air` builds and runs, and what it printed. (The entry for `5a97bee` below said the GPUs' dispatch hardly grows with the pixels; Metal's grows about sixfold, and it now says so.)
+
+---
+
 ### zero: three angles and two sizes on WebGPU and Metal, each the same as the CPU's — `5a97bee` · 2026-10-25
 
 Hop sixty-two, part 4. `probe zero <store> kernel` takes several calls, each run on each GPU named; under `PROBE_TIME=k` the drivers dispatch the same kernel k times on the same memory and print the least, and the kernel form asks for five and calls the CPU's `frame` five times, keeping the least: one dispatch alone timed from 1.1 to 47 ms for the same frame, the first after a pipeline is made carrying the GPU's waking and Chrome's scheduling. `probe zero suite/zero/triangle kernel 'frame (64, 0.0)' 'frame (64, 0.5)' 'frame (64, 2.0943951)' 'frame (256, 0.5)' --wgsl --air`: **all eight the same as the CPU's, word for word**, 4096 of 4096 at 64 a side and 65536 of 65536 at 256, on WebGPU and on Metal, which takes the module as it is. Over three runs, each time the least of five:
@@ -13,7 +19,7 @@ Hop sixty-two, part 4. `probe zero <store> kernel` takes several calls, each run
 | 64 a side, three angles | 0.2 to 1.8 ms | 0.44 to 0.53 ms | 0.36 to 0.42 ms |
 | 256 a side | 0.4 to 1.9 ms | 2.7 to 2.9 ms | 5.6 to 6.0 ms |
 
-A dispatch is timed from its submit to the area read back; WebGPU's clock in the page is cut to a tenth of a millisecond. The whole run is about 2.55 s on WebGPU, most of it Chrome's start, and about 0.13 s on Metal with the driver's. The CPU's loop is 90 ns a pixel at both sizes; the GPUs' dispatch hardly grows with sixteen times the pixels, which is the first number for `places.md`'s "how good a place is at a thing".
+A dispatch is timed from its submit to the area read back; WebGPU's clock in the page is cut to a tenth of a millisecond. The whole run is about 2.55 s on WebGPU, most of it Chrome's start, and about 0.13 s on Metal with the driver's. The CPU's loop is 90 ns a pixel at both sizes; with sixteen times the pixels WebGPU's dispatch hardly grows and Metal's grows about sixfold: the first numbers for `places.md`'s "how good a place is at a thing".
 
 ---
 
