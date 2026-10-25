@@ -1,8 +1,16 @@
 #!/usr/bin/env node
-// A probe program's kernel, printed as WGSL (src/emit_wgsl.rs), compiled by
-// WebGPU in a headless Chrome: the only WGSL validator on the machine.
+// Run a probe program's kernel, printed as WGSL (src/emit_wgsl.rs), on this
+// machine's GPU through WebGPU in a headless Chrome: the second GPU path
+// beside tools/driver_metal.py, and the only WGSL validator on the machine.
 // No package: Chrome's own debugging protocol over node's WebSocket.
 //
+//   node tools/driver_webgpu.js --kernel x.wgsl x.wgsl.json n [g] [n g ...]
+//     buffer 0 is the program's memory, laid out as driver_metal.py --kernel
+//     lays it out: the data image, n slabs, then an area of n i64 words the
+//     program writes; the uniform's first words are the area's offset. n
+//     threads in workgroups of g (by default the largest divisor of n up to
+//     256: WebGPU dispatches whole workgroups). One line `area: [...]` per
+//     (n, g), in the Metal driver's form, all of them in one Chrome.
 //   node tools/driver_webgpu.js --check x.wgsl
 //     compile only: what Chrome's WGSL compiler says, nothing run.
 //   node tools/driver_webgpu.js --adapter
@@ -11,7 +19,7 @@
 // Chrome runs on a debugging port the system chooses (read back from the
 // profile's DevToolsActivePort) with a profile of its own made under
 // $TMPDIR for this run, so it cannot meet any other Chrome on the machine;
-// it is killed when the answer is in and on any error, and the profile
+// it is killed when the cases are done and on any error, and the profile
 // goes with it.
 const fs = require("fs");
 const os = require("os");
@@ -23,7 +31,7 @@ const LIMIT_MS = 60000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function usage() {
-  process.stderr.write("usage: driver_webgpu.js --check x.wgsl | --adapter\n");
+  process.stderr.write("usage: driver_webgpu.js --kernel x.wgsl x.wgsl.json n [g] [n g ...] | --check x.wgsl | --adapter\n");
   process.exit(2);
 }
 
@@ -40,11 +48,69 @@ async function inPage(job) {
     if (!a.features.has("subgroups")) return { ...out, error: "the adapter has no subgroups, and the kernel uses subgroup operations" };
     features.push("subgroups");
   }
-  const dev = await a.requestDevice({ requiredFeatures: features });
+  let need = 1 << 16, groups = 1;
+  for (const [n, g] of job.cases) {
+    need = Math.max(need, ((job.dataLen + 15) & ~15) + n * job.slab + 16 + 8 * n);
+    groups = Math.max(groups, g);
+  }
+  const limits = { maxStorageBufferBindingSize: Math.min(need, a.limits.maxStorageBufferBindingSize), maxBufferSize: Math.min(need, a.limits.maxBufferSize), maxComputeInvocationsPerWorkgroup: Math.min(Math.max(groups, 256), a.limits.maxComputeInvocationsPerWorkgroup), maxComputeWorkgroupSizeX: Math.min(Math.max(groups, 256), a.limits.maxComputeWorkgroupSizeX) };
+  const dev = await a.requestDevice({ requiredFeatures: features, requiredLimits: limits });
+  let lost = null;
+  dev.lost.then((i) => (lost = i.message));
   const mod = dev.createShaderModule({ code: job.wgsl });
   const info = await mod.getCompilationInfo();
   out.messages = info.messages.map((m) => `wgsl:${m.lineNum}:${m.linePos}: ${m.type}: ${m.message}`);
   if (info.messages.some((m) => m.type === "error")) return { ...out, error: "WGSL does not compile" };
+  if (job.check) return out;
+  const bin = atob(job.data);
+  const data = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+  out.areas = [];
+  for (const [n, g] of job.cases) {
+    const dataSize = (data.length + 15) & ~15;
+    const areaOff = (dataSize + n * job.slab + 15) & ~15;
+    const memLen = areaOff + 8 * n;
+    dev.pushErrorScope("validation");
+    dev.pushErrorScope("out-of-memory");
+    // a WebGPU buffer starts as zeros
+    const mem = dev.createBuffer({ size: memLen, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
+    new Uint8Array(mem.getMappedRange()).set(data);
+    mem.unmap();
+    const params = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM, mappedAtCreation: true });
+    new Uint32Array(params.getMappedRange()).set([areaOff, 0, 0, 0]);
+    params.unmap();
+    const read = dev.createBuffer({ size: 8 * n, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    let pipe;
+    try {
+      pipe = await dev.createComputePipelineAsync({ layout: "auto", compute: { module: mod, entryPoint: "main", constants: { group_size: g } } });
+    } catch (e) {
+      return { ...out, error: "pipeline: " + e.message };
+    }
+    const bind = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: mem } }, { binding: 1, resource: { buffer: params } }] });
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipe);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(n / g);
+    pass.end();
+    enc.copyBufferToBuffer(mem, areaOff, read, 0, 8 * n);
+    dev.queue.submit([enc.finish()]);
+    const oom = await dev.popErrorScope();
+    const bad = await dev.popErrorScope();
+    if (bad) return { ...out, error: "validation: " + bad.message };
+    if (oom) return { ...out, error: "out of memory: " + oom.message };
+    try {
+      await read.mapAsync(GPUMapMode.READ);
+    } catch (e) {
+      return { ...out, error: "reading the area back: " + (lost || e.message) };
+    }
+    const words = new BigInt64Array(read.getMappedRange().slice(0));
+    read.unmap();
+    mem.destroy();
+    params.destroy();
+    read.destroy();
+    out.areas.push([...words].map(String));
+  }
   return out;
 }
 
@@ -56,6 +122,27 @@ async function main() {
   } else if (args[0] === "--check" && args.length === 2) {
     job.check = true;
     job.wgsl = fs.readFileSync(args[1], "utf8");
+  } else if (args[0] === "--kernel" && args.length >= 4) {
+    job.wgsl = fs.readFileSync(args[1], "utf8");
+    const layout = JSON.parse(fs.readFileSync(args[2], "utf8"));
+    const data = Buffer.from(layout.data, "hex");
+    job.data = data.toString("base64");
+    job.dataLen = data.length;
+    job.slab = layout.slab;
+    const nums = args.slice(3).map(Number);
+    if (nums.some((x) => !Number.isInteger(x) || x <= 0)) usage();
+    if (nums.length === 1) {
+      const n = nums[0];
+      let g = Math.min(n, 256);
+      while (n % g) g--;
+      job.cases.push([n, g]);
+    } else {
+      if (nums.length % 2) usage();
+      for (let i = 0; i < nums.length; i += 2) {
+        if (nums[i] % nums[i + 1]) throw new Error(`${nums[i + 1]} does not divide ${nums[i]}: WebGPU dispatches whole workgroups`);
+        job.cases.push([nums[i], nums[i + 1]]);
+      }
+    }
   } else usage();
   job.subgroups = /^\s*enable\s+subgroups\s*;/m.test(job.wgsl || "");
 
@@ -134,6 +221,7 @@ async function main() {
     for (const m of out.messages || []) process.stderr.write(m + "\n");
     if (out.error) throw new Error(out.error);
     if (job.check) console.log("compiles");
+    for (const words of out.areas || []) console.log(`area: [${words.join(", ")}]`);
   } catch (e) {
     process.stderr.write("driver_webgpu: " + e.message + "\n");
     process.exitCode = 1;
