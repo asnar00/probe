@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the real wire, step one — the suite over the socket, `probe zero test suite/zero --wire real` — `de18400` · 2026-10-25
+
+Hop sixty, part 7 (fm3 log 322). `probe zero test <dir> --wire real` runs step one's stores where it finds them under the directory (`real::STEP_ONE`: hello, restart, stamp, counter): every case in each of its contexts at every cut the cut runners try, the client and the server of each run in two processes over a loopback socket, six runs at a time since each mostly waits on the clock, each compared by its own times as over the simulated wire, a home's stamp read by a case not compared, as there (fm3 question 180). `probe zero test suite/zero` does not run it. **Over the suite**: 4 stores, 19 cuts run and 4 refused (stamp's and the counter's two that split `presses` from `pressed`, as over the simulated wire); 114 of 114 runs at a cut hold by their own times, 2 not compared (stamp's, the server's clock); 794 of 906 pieces shown late, the most 4.531 ms; a row one way on the loopback 20 µs to 90 µs, the middle 35 µs; four minutes and 39 seconds. The README's `zero` section says what a real wire is and how to run it.
+
+---
+
 ### zero: the real wire, step one — a set delay, `--wire real, 100 ms` — `1ee1253` · 2026-10-25
 
 Hop sixty, part 5 (fm3 wire.md, "what a row is on the wire"; fm3 log 320). Cheap, and built: the receiver holds each of the module's rows until the set delay has passed since it arrived, by its own clock, a row's `at` being its arrival plus the delay (wire.md's reading, needing no clock sync; the prompt's "since the sender's stamp" would hold a piece the server worked out seconds ahead until its own time). What each place said of where it stands before the case is there at its start, unheld, as the simulated wire's handshake is. hello with everything on the server: its own line, the first `10` at 200.349 ms where the simulated wire of 100 ms has 200 ms; restart's key at 3.5 s: its own line, the two `10`s 200.26 ms and 200.604 ms late and every other piece within 65 µs, the shape of its case `with ..., wire 100 ms`. A speed or a gap after `real` is step two's. `a_real_wire_holds_a_set_delay`.
