@@ -11,8 +11,9 @@
 //     threads in workgroups of g (by default the largest divisor of n up to
 //     256: WebGPU dispatches whole workgroups). One line `area: [...]` per
 //     (n, g), in the Metal driver's form, all of them in one Chrome.
-//     With PROBE_TIME=1 in the environment, each area is followed by
-//     `time: <ms> ms`, the dispatch from its submit to the area read back.
+//     With PROBE_TIME=k in the environment, each area is followed by
+//     `time: <ms> ms`, the dispatch from its submit to the area read back,
+//     the least of k dispatches of the same kernel on the same memory.
 //   node tools/driver_webgpu.js --check x.wgsl
 //     compile only: what Chrome's WGSL compiler says, nothing run.
 //   node tools/driver_webgpu.js --adapter
@@ -107,9 +108,26 @@ async function inPage(job) {
     } catch (e) {
       return { ...out, error: "reading the area back: " + (lost || e.message) };
     }
-    (out.times ||= []).push(performance.now() - t0);
+    let least = performance.now() - t0;
     const words = new BigInt64Array(read.getMappedRange().slice(0));
     read.unmap();
+    // (timed, the same dispatch again, job.reps in all, and the least
+    // kept: the first carries the GPU waking and Chrome's scheduling)
+    for (let r = 1; r < job.reps; r++) {
+      const e2 = dev.createCommandEncoder();
+      const p2 = e2.beginComputePass();
+      p2.setPipeline(pipe);
+      p2.setBindGroup(0, bind);
+      p2.dispatchWorkgroups(n / g);
+      p2.end();
+      e2.copyBufferToBuffer(mem, areaOff, read, 0, 8 * n);
+      const t1 = performance.now();
+      dev.queue.submit([e2.finish()]);
+      await read.mapAsync(GPUMapMode.READ);
+      least = Math.min(least, performance.now() - t1);
+      read.unmap();
+    }
+    (out.times ||= []).push(least);
     mem.destroy();
     params.destroy();
     read.destroy();
@@ -149,6 +167,7 @@ async function main() {
     }
   } else usage();
   job.subgroups = /^\s*enable\s+subgroups\s*;/m.test(job.wgsl || "");
+  job.reps = Math.max(1, parseInt(process.env.PROBE_TIME || "1", 10) || 1);
 
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "probe-wgsl-"));
   const page = path.join(profile, "page.html");
@@ -225,8 +244,8 @@ async function main() {
     for (const m of out.messages || []) process.stderr.write(m + "\n");
     if (out.error) throw new Error(out.error);
     if (job.check) console.log("compiles");
-    // PROBE_TIME=1: after each area the dispatch's milliseconds, from the
-    // submit to the area mapped back (`probe zero <store> kernel`)
+    // PROBE_TIME=k: after each area the dispatch's milliseconds, from the
+    // submit to the area mapped back, the least of k (`probe zero <store> kernel`)
     (out.areas || []).forEach((words, i) => {
       console.log(`area: [${words.join(", ")}]`);
       if (process.env.PROBE_TIME) console.log(`time: ${out.times[i].toFixed(3)} ms`);

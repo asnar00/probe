@@ -31,6 +31,8 @@ use std::time::Instant;
 const ARENA: usize = 1 << 24;
 /// ... and how many items it copies out
 const OUT: usize = 1 << 20;
+/// how many times a driver dispatches the kernel, the least time kept
+const TIMES: usize = 5;
 
 /// which GPU path the kernel takes
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +74,7 @@ impl Compared {
             Some((k, g, c)) => format!("{}: {} pixels on {}; pixel {} differs: {} on {}, {} on the CPU ({} the same)\n", self.call, self.words, self.gpu.name(), k, g, self.gpu.name(), c, self.same),
         };
         let module = if self.wgsl_lines > 0 { format!(" ({} lines of WGSL)", self.wgsl_lines) } else { String::new() };
-        let _ = writeln!(s, "  {}{}: the kernel's dispatch {:.2} ms, the whole run {:.0} ms{}; the CPU's loop {:.2} ms", self.gpu.name(), module, self.dispatch_ms, self.whole_ms, if self.gpu == Gpu::Wgsl { " with Chrome's start" } else { " with the driver's start" }, self.cpu_ms);
+        let _ = writeln!(s, "  {}{}: the kernel's dispatch {:.2} ms (the least of five), the whole run {:.0} ms{}; the CPU's loop {:.2} ms (the least of five)", self.gpu.name(), module, self.dispatch_ms, self.whole_ms, if self.gpu == Gpu::Wgsl { " with Chrome's start" } else { " with the driver's start" }, self.cpu_ms);
         s
     }
 }
@@ -173,7 +175,7 @@ fn native_ir(ir: &str, p: &KernelPlan) -> Result<String, String> {
 }
 
 /// The CPU's frame: the called function on the JIT, in a child as every
-/// call of the runner's is, and its milliseconds
+/// call of the runner's is, and its milliseconds, the least of five calls
 fn cpu_frame(module: &ssa::Module, p: &KernelPlan) -> Result<(Vec<i64>, f64), String> {
     let enc = emit::Encoder::load("targets/arm64.encodings.json")?;
     let jit = emit::compile(module, &enc).and_then(|c| emit::jit::JitCode::new(&c))?;
@@ -192,10 +194,14 @@ fn cpu_frame(module: &ssa::Module, p: &KernelPlan) -> Result<(Vec<i64>, f64), St
     };
     let got = suite::forked(
         || {
-            reset()?;
-            let t0 = Instant::now();
-            jit.call("__kernel_count", &args)?;
-            let ns = t0.elapsed().as_nanos() as i64;
+            // (the least of as many calls as the GPU's dispatches)
+            let mut ns = i64::MAX;
+            for _ in 0..TIMES {
+                reset()?;
+                let t0 = Instant::now();
+                jit.call("__kernel_count", &args)?;
+                ns = ns.min(t0.elapsed().as_nanos() as i64);
+            }
             reset()?;
             let n = jit.call("__kernel_copy", &args)?;
             let mut values = vec![ns];
@@ -246,7 +252,7 @@ fn gpu_frame(ir: &str, s: &store::Store, name: &str, n: usize, gpu: Gpu, level: 
             let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
             std::fs::write(&json, format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}\n", data_hex, c.layout.slab)).map_err(|e| e.to_string())?;
             let t0 = Instant::now();
-            let out = Command::new("node").arg("tools/driver_webgpu.js").arg("--kernel").arg(&text).arg(&json).arg(n.to_string()).env("PROBE_TIME", "1").output().map_err(|e| format!("node: {}", e))?;
+            let out = Command::new("node").arg("tools/driver_webgpu.js").arg("--kernel").arg(&text).arg(&json).arg(n.to_string()).env("PROBE_TIME", TIMES.to_string()).output().map_err(|e| format!("node: {}", e))?;
             ((out, t0.elapsed().as_secs_f64() * 1e3), c.text.lines().count())
         }
         Gpu::Air => {
@@ -262,7 +268,7 @@ fn gpu_frame(ir: &str, s: &store::Store, name: &str, n: usize, gpu: Gpu, level: 
             let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
             std::fs::write(&json, format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}", data_hex, c.layout.slab)).map_err(|e| e.to_string())?;
             let t0 = Instant::now();
-            let out = Command::new("python3").args(["tools/driver_metal.py", "--kernel"]).arg(&lib).arg(&json).arg(n.to_string()).env("PROBE_TIME", "1").output().map_err(|e| format!("python3: {}", e))?;
+            let out = Command::new("python3").args(["tools/driver_metal.py", "--kernel"]).arg(&lib).arg(&json).arg(n.to_string()).env("PROBE_TIME", TIMES.to_string()).output().map_err(|e| format!("python3: {}", e))?;
             ((out, t0.elapsed().as_secs_f64() * 1e3), 0)
         }
     };

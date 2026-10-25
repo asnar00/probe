@@ -75,13 +75,18 @@ if sys.argv[1] == "--kernel":
     view[:len(data)] = data
     params = dev.newBufferWithLength_options_(8, 0)
     memoryview(params.contents().as_buffer(8))[:] = area_off.to_bytes(8, "little")
-    t0 = time.perf_counter()
-    run(dev, pso, mem, params, n, group)
-    took = (time.perf_counter() - t0) * 1e3
+    # PROBE_TIME=k: the dispatch's milliseconds, from the command buffer's
+    # making to its completion, the least of k dispatches of the same
+    # kernel on the same memory (`probe zero <store> kernel --air`)
+    reps = max(1, int(os.environ.get("PROBE_TIME") or "1"))
+    took = None
+    for r in range(reps):
+        t0 = time.perf_counter()
+        run(dev, pso, mem, params, n, group)
+        t = (time.perf_counter() - t0) * 1e3
+        took = t if took is None else min(took, t)
     out = (ctypes.c_int64 * n).from_buffer(mem.contents().as_buffer(mem_len), area_off)
     print("area:", list(out))
-    # PROBE_TIME=1: the dispatch's milliseconds, from the command buffer's
-    # making to its completion (`probe zero <store> kernel --air`)
     if os.environ.get("PROBE_TIME"):
         print("time: %.3f ms" % took)
     sys.exit(0)
