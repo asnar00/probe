@@ -22,7 +22,7 @@ use super::places::Placed;
 use super::run::{self, Planned};
 use super::{lower, store};
 use crate::emit::jit::JitCode;
-use crate::suite;
+use crate::suite::{self, Report};
 use crate::{emit, ssa};
 use std::io::{BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -761,6 +761,154 @@ pub fn late_said_us(pieces: &[run::Shown]) -> String {
         out.push_str(&format!("  {:?} for {}, shown at {}, {} late\n", p.text, store::spell_time(p.own), spell_at(p.shown), spell_us(p.shown - p.own)));
     }
     out
+}
+
+/// the stores of step one (fm3 wire.md): the touchstone's and hop
+/// fifty-eight's, which `probe zero test <dir> --wire real` runs where it
+/// finds them under the directory
+pub const STEP_ONE: [&str; 4] = ["hello", "restart", "stamp", "counter"];
+
+/// what the suite over a real wire found
+#[derive(Default)]
+pub struct Reals {
+    pub stores: usize,
+    pub cuts: usize,
+    pub refused: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub stamped: usize,
+    pub most: i64,
+    pub pieces: usize,
+    pub late: usize,
+    pub one_way: Vec<i64>,
+}
+
+/// One store over a real wire (fm3 wire.md, step one): its build for a wire
+/// with the queue's entries, compiled once, and each case in each of its
+/// contexts at every cut the runner tries, every unit on the server and
+/// each alone, the client and the server in two processes; a case compared
+/// by its own times as over the simulated wire, what was late counted. The
+/// runs of a store go a few at a time, each its own pair of processes
+pub fn test_real(sdir: &Path, policy: &ssa::Policy, level: usize, report: &mut Report, reals: &mut Reals, delay: i64) {
+    let name = sdir.file_name().unwrap().to_string_lossy().to_string();
+    let (s, l, module, policy) = match build(sdir, policy, level) {
+        Ok(b) => b,
+        Err(e) => {
+            report.failed += 1;
+            report.log.push_str(&format!("FAIL  {:<16} not built for a real wire: {}\n", name, e));
+            return;
+        }
+    };
+    reals.stores += 1;
+    let Some(placed) = &l.placed else { return };
+    run::two_named(&s, "real", &name, report);
+    let built = (|| -> Result<(Vec<Planned>, Vec<run::Run>), String> {
+        let cases = run::calls_of(&s, &l, &policy)?;
+        let (runs, _) = run::plan(&s, &cases)?;
+        Ok((cases, runs))
+    })();
+    let (cases, runs) = match built {
+        Ok(b) => b,
+        Err(e) => {
+            report.failed += 1;
+            report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
+            return;
+        }
+    };
+    let unreached = run::out_of_reach(&module, &l.funcs, run::kind_of(suite::Backend::Native));
+    let runs: Vec<&run::Run> = runs.iter().filter(|r| !unreached.contains_key(&cases[r.case].call.func)).collect();
+    let jit = match jit_of(&module) {
+        Ok(j) => j,
+        Err(e) => {
+            report.failed += 1;
+            report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
+            return;
+        }
+    };
+    let (mut ran, mut refused, mut failed, mut stamped, mut most) = (0, 0, 0, 0, 0i64);
+    for server in super::places::cuts(placed) {
+        let label = placed.label(&server);
+        if let Some(why) = placed.refused(&server) {
+            refused += 1;
+            reals.refused += 1;
+            report.log.push_str(&format!("real  {:<16} [{}] refused: {}\n", name, label, why));
+            continue;
+        }
+        reals.cuts += 1;
+        ran += 1;
+        let cut = placed.cut(&server);
+        // (a few at a time: each run is two processes that mostly wait on the clock)
+        let results = parallel(&runs, |r| case_run(&module, &jit, &cut.before, &cases[r.case], &r.switches, delay));
+        for (r, got) in runs.iter().zip(results) {
+            let text = format!("{} [{}, a {} wire]", run::labelled(&cases[r.case].text, &r.label), label, Real { delay }.said());
+            let (own, stamp) = match got {
+                Ok(ran) => {
+                    most = most.max(ran.pieces.iter().map(|p| p.shown - p.own).max().unwrap_or(0));
+                    reals.pieces += ran.pieces.len();
+                    reals.late += ran.pieces.iter().filter(|p| p.shown > p.own).count();
+                    reals.one_way.push(one_way(&ran.client.pings));
+                    let stamp = run::home_stamped(&ran.log);
+                    let mut g = ran.got;
+                    if !matches!(cases[r.case].call.expect, store::Expect::Timed(_)) {
+                        g.marks.clear();
+                    }
+                    (Ok(g), stamp)
+                }
+                Err(e) => (Err(e), false),
+            };
+            let (ok, note) = run::judge(&cases[r.case].call.expect, own);
+            if ok {
+                reals.passed += 1;
+                report.passed += 1;
+            } else if stamp {
+                // (as over the simulated wire, question 180: the home's clock stamped later than the item's own time, and the case reads it)
+                stamped += 1;
+                reals.stamped += 1;
+                report.log.push_str(&format!("home  {:<16} {}   {}: the home stamped an item by its own clock, and the case reads it: not compared, as over the simulated wire\n", name, text, note));
+            } else {
+                failed += 1;
+                reals.failed += 1;
+                report.failed += 1;
+                report.log.push_str(&format!("FAIL  {:<16} {}   {}\n", name, text, note));
+            }
+        }
+    }
+    reals.most = reals.most.max(most);
+    report.log.push_str(&format!("reals {:<16} {} units, {} cuts run{}{}\n", name, placed.units.len(), ran, if refused > 0 { format!(", {} refused", refused) } else { String::new() }, if failed > 0 { format!(", {} runs do not hold", failed) } else if stamped > 0 { format!(": holds by its own times; its stamps not compared, {} run{}; the most a piece is late {}", stamped, if stamped == 1 { "" } else { "s" }, spell_us(most)) } else { format!(": every case holds at each by its own times over the socket; the most a piece is late {}", spell_us(most)) }));
+}
+
+/// the runs of one cut, `WIDTH` at a time, each in a thread of its own
+/// that forks its two places; their results in order
+fn parallel<'a, F: Fn(&run::Run) -> Result<Ran, String> + Sync>(runs: &[&'a run::Run], f: F) -> Vec<Result<Ran, String>> {
+    const WIDTH: usize = 6;
+    let mut out: Vec<Result<Ran, String>> = Vec::new();
+    for chunk in runs.chunks(WIDTH) {
+        let got: Vec<Result<Ran, String>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = chunk.iter().map(|r| sc.spawn(|| f(r))).collect();
+            hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("a runner thread panicked".into()))).collect()
+        });
+        out.extend(got);
+    }
+    out
+}
+
+/// `probe zero test <dir> --wire real`: the stores of step one under the
+/// directory, each over a real wire at every cut
+pub fn test(dir: &Path, level: usize, delay: i64) -> Result<Report, String> {
+    let policy = suite::backend_policy(suite::Backend::Native)?;
+    let mut report = Report { passed: 0, failed: 0, skipped: 0, log: String::new() };
+    let mut reals = Reals::default();
+    let found: Vec<std::path::PathBuf> = STEP_ONE.iter().map(|n| dir.join(n)).filter(|p| p.is_dir()).collect();
+    if found.is_empty() {
+        return Err(format!("none of step one's stores ({}) is under {}", STEP_ONE.join(", "), dir.display()));
+    }
+    for sdir in &found {
+        test_real(sdir, &policy, level, &mut report, &mut reals, delay);
+    }
+    let mut ow = reals.one_way.clone();
+    ow.sort();
+    report.log.push_str(&format!("\nreal wire{}: {} stores, {} cuts run, {} refused; {} of {} runs at a cut hold by their own times{}; {} of {} pieces of text shown late, the most {}; a row one way on the loopback {} to {}, the middle {}\n", if delay > 0 { format!(", {}", run::spell_late(delay)) } else { String::new() }, reals.stores, reals.cuts, reals.refused, reals.passed, reals.passed + reals.failed, if reals.stamped > 0 { format!(", {} not compared (a home's stamp)", reals.stamped) } else { String::new() }, reals.late, reals.pieces, spell_us(reals.most), spell_us(*ow.first().unwrap_or(&0)), spell_us(*ow.last().unwrap_or(&0)), spell_us(*ow.get(ow.len() / 2).unwrap_or(&0))));
+    Ok(report)
 }
 
 #[cfg(test)]

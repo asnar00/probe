@@ -312,7 +312,8 @@ fn moves_said(args: &[String]) -> Result<(Vec<(String, i64)>, Vec<usize>), Strin
 /// at its new one
 fn unknown_word(args: &[String]) -> Option<String> {
     let known: &[&str] = match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
-        (Some("test" | "meter" | "names"), _) => &[],
+        (Some("test"), _) => &["--wire"],
+        (Some("meter" | "names"), _) => &[],
         (Some(_), Some("emit")) if args.get(2).map(String::as_str) == Some("places") => &["--server", "--then", "--wire", "--choose"],
         (Some(_), Some("emit")) => &[],
         (Some(_), Some("placement")) => &["--server", "--case", "--then", "--wire", "--choose"],
@@ -363,6 +364,8 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                                        on a path: wasm, riscv, arm-qemu, air (native by default)");
         eprintln!("                                        PROBE_ZERO_CUTS=1: and again at every cut, every unit on the server and each alone,");
         eprintln!("                                        and a case with a time moved partway, everything on the server to the client and back");
+        eprintln!("       probe zero test [dir] --wire real[, <time>]  the stores of step one (hello, restart, stamp, counter) under dir,");
+        eprintln!("                                        every case at every cut over a real wire, two processes on the loopback");
         ExitCode::FAILURE
     };
     match args.first().map(String::as_str) {
@@ -376,7 +379,36 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                 Some("air") => suite::Backend::Air,
                 _ => suite::Backend::Native,
             };
-            let dir = rest.iter().find(|a| !paths.contains(a)).copied().unwrap_or("suite/zero");
+            // (hop sixty) `--wire real`: the stores of step one over a real wire
+            let real = match real_said(args) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            if args.iter().any(|a| a == "--wire") && real.is_none() {
+                eprintln!("`probe zero test <dir> --wire real` runs the stores of step one over a real wire; a simulated wire is said `PROBE_ZERO_CUTS=wire=100`");
+                return ExitCode::FAILURE;
+            }
+            let taken: Vec<usize> = real.as_ref().map(|(_, u)| u.iter().map(|k| k - 1).collect()).unwrap_or_default();
+            let dir = rest.iter().enumerate().find(|(k, a)| !paths.contains(a) && !taken.contains(k)).map(|(_, a)| *a).unwrap_or("suite/zero");
+            if let Some((r, _)) = real {
+                if backend != suite::Backend::Native {
+                    eprintln!("a real wire is two native processes: `probe zero test <dir> --wire real` runs on the JIT");
+                    return ExitCode::FAILURE;
+                }
+                return match real::test(Path::new(dir), level, r.delay) {
+                    Ok(report) => {
+                        print!("{}", report.log);
+                        if report.failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        ExitCode::FAILURE
+                    }
+                };
+            }
             match run::test(Path::new(dir), backend, level) {
                 Ok(report) => {
                     print!("{}", report.log);
@@ -611,6 +643,7 @@ mod tests {
         assert_eq!(unknown_word(&words(&["suite/zero/hello", "run", "-t", "(-1) plus (2)"])), None);
         assert_eq!(unknown_word(&words(&["suite/zero/hello", "trace", "run()", "--fast"])).as_deref(), Some("--fast is not a word the runner knows; this command knows --json"));
         assert_eq!(unknown_word(&words(&["suite/zero/hello", "emit", "--far"])).as_deref(), Some("--far is not a word the runner knows; this command takes none"));
-        assert_eq!(unknown_word(&words(&["test", "suite/zero", "wasm", "-x"])).as_deref(), Some("-x is not a word the runner knows; this command takes none"));
+        assert_eq!(unknown_word(&words(&["test", "suite/zero", "wasm", "-x"])).as_deref(), Some("-x is not a word the runner knows; this command knows --wire"));
+        assert_eq!(unknown_word(&words(&["test", "suite/zero", "--wire", "real,", "100", "ms"])), None);
     }
 }
