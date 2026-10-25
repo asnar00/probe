@@ -136,16 +136,33 @@ fn real_said(args: &[String]) -> Result<Option<(real::Real, Vec<usize>)>, String
     if first != Some("real") && first != Some("real,") {
         return Ok(None);
     }
-    let used = vec![i, i + 1];
-    if first == Some("real,") || args.get(i + 2).map(String::as_str) == Some(",") {
-        return Err("a set delay on a real wire is not built yet: `--wire real`".to_string());
+    let mut used = vec![i, i + 1];
+    let mut k = i + 2;
+    let comma = first == Some("real,") || args.get(k).map(String::as_str) == Some(",");
+    if args.get(k).map(String::as_str) == Some(",") {
+        used.push(k);
+        k += 1;
     }
-    if let Some(w) = args.get(i + 2).filter(|a| !a.starts_with("--")) {
-        if w == "then" || w.ends_with("bytes/s") || w == "gone" {
+    let mut delay = 0;
+    if comma {
+        let n = args.get(k).filter(|a| !a.starts_with("--")).ok_or("a real wire's set delay is said `--wire real, 100 ms`")?;
+        let unit = args.get(k + 1).filter(|u| *u == "s" || *u == "ms");
+        delay = run::time_said(&match unit {
+            Some(u) => format!("{}{}", n, u),
+            None => n.clone(),
+        })?;
+        used.push(k);
+        if unit.is_some() {
+            used.push(k + 1);
+            k += 1;
+        }
+        k += 1;
+    }
+    if let Some(w) = args.get(k).filter(|a| !a.starts_with("--")) {
+        if w.starts_with(',') || w == "then" || w.ends_with("bytes/s") || w == "gone" {
             return Err(real::refused_step(false, false, false, false, true).unwrap());
         }
     }
-    let delay = 0;
     Ok(Some((real::Real { delay }, used)))
 }
 
@@ -334,7 +351,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where the server works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
         eprintln!("                            [--choose <bound>]         ... with `--server` and `--wire`: the runner chooses each cut after the first, between it and nothing on the server, at the client, by round trips of its own: lateness under the bound is none; each choice printed with its time and reason");
         eprintln!("                            [--wire <time> then <time>|gone at <time> ...]  ... over a wire whose delay changes while it runs, or that goes: an item takes the delay of when it is put on, a gone wire holds it until it comes back; beneath what was late, the pieces never shown where the wire went for good");
-        eprintln!("                            [--wire real]              ... over a real wire: the client and the server in two processes on this machine, the rows crossing a loopback socket as bytes, on the real clock (fm3 wire.md, step one)");
+        eprintln!("                            [--wire real[, <time>]]    ... over a real wire: the client and the server in two processes on this machine, the rows crossing a loopback socket as bytes, on the real clock; with a time, each row held that long where it arrives (fm3 wire.md, step one)");
         eprintln!("       probe zero <store> placement [--server <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the client dropped unshown and each time the server went back");
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");

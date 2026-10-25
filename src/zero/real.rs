@@ -815,4 +815,18 @@ mod tests {
         assert!(two.contains("three places") && two.contains("step three's"), "{}", two);
         assert!(refused_build("\nfn __act_land(row: index)\n").is_some() && refused_build("\nfn __world()\n").is_none());
     }
+
+    /// a set delay on a real wire (fm3 wire.md, step one): each row held
+    /// 100 ms where it arrives, so hello with everything on the server shows
+    /// its first piece a round trip late, as over the simulated wire, and
+    /// the loopback's own time beside it
+    #[test]
+    fn a_real_wire_holds_a_set_delay() {
+        let native = suite::backend_policy(suite::Backend::Native).unwrap();
+        let out = run_real(Path::new("suite/zero/hello"), "run()", &native, opt::MAX_LEVEL, Some("all"), Real { delay: 100_000 }, None).unwrap();
+        assert!(out.contains("server: all, a real, 100 ms wire") && out.contains("\n→ \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\n\" at 1 hz, \"hello world\\ngoodbye\" at 10 s\n"), "{}", out);
+        let late = out.lines().find(|l| l.starts_with("  \"10\\n\" for 0 s, shown at ")).unwrap_or("");
+        let ms: f64 = late.rsplit(", ").next().unwrap_or("").trim_end_matches(" late").trim_end_matches(" ms").parse().unwrap_or(0.0);
+        assert!((200.0..210.0).contains(&ms), "{}", out);
+    }
 }
