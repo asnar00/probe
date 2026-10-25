@@ -11,6 +11,8 @@
 //     threads in workgroups of g (by default the largest divisor of n up to
 //     256: WebGPU dispatches whole workgroups). One line `area: [...]` per
 //     (n, g), in the Metal driver's form, all of them in one Chrome.
+//     With PROBE_TIME=1 in the environment, each area is followed by
+//     `time: <ms> ms`, the dispatch from its submit to the area read back.
 //   node tools/driver_webgpu.js --check x.wgsl
 //     compile only: what Chrome's WGSL compiler says, nothing run.
 //   node tools/driver_webgpu.js --adapter
@@ -94,6 +96,7 @@ async function inPage(job) {
     pass.dispatchWorkgroups(n / g);
     pass.end();
     enc.copyBufferToBuffer(mem, areaOff, read, 0, 8 * n);
+    const t0 = performance.now();
     dev.queue.submit([enc.finish()]);
     const oom = await dev.popErrorScope();
     const bad = await dev.popErrorScope();
@@ -104,6 +107,7 @@ async function inPage(job) {
     } catch (e) {
       return { ...out, error: "reading the area back: " + (lost || e.message) };
     }
+    (out.times ||= []).push(performance.now() - t0);
     const words = new BigInt64Array(read.getMappedRange().slice(0));
     read.unmap();
     mem.destroy();
@@ -221,7 +225,12 @@ async function main() {
     for (const m of out.messages || []) process.stderr.write(m + "\n");
     if (out.error) throw new Error(out.error);
     if (job.check) console.log("compiles");
-    for (const words of out.areas || []) console.log(`area: [${words.join(", ")}]`);
+    // PROBE_TIME=1: after each area the dispatch's milliseconds, from the
+    // submit to the area mapped back (`probe zero <store> kernel`)
+    (out.areas || []).forEach((words, i) => {
+      console.log(`area: [${words.join(", ")}]`);
+      if (process.env.PROBE_TIME) console.log(`time: ${out.times[i].toFixed(3)} ms`);
+    });
   } catch (e) {
     process.stderr.write("driver_webgpu: " + e.message + "\n");
     process.exitCode = 1;

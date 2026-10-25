@@ -5,6 +5,7 @@
 //! language definition; the front end adds no semantics of its own.
 
 pub mod home;
+pub mod kernel;
 pub mod kinds;
 pub mod lex;
 pub mod lower;
@@ -319,6 +320,7 @@ fn unknown_word(args: &[String]) -> Option<String> {
         (Some(_), Some("placement")) => &["--server", "--case", "--then", "--wire", "--choose"],
         (Some(_), Some("run")) => &["--fast", "-t", "--server", "--then", "--wire", "--choose", "--gone"],
         (Some(_), Some("trace")) => &["--json"],
+        (Some(_), Some("kernel")) => &["--wgsl", "--air"],
         _ => return None,
     };
     let flag = |a: &str| a.starts_with("--") || (a.starts_with('-') && a[1..].starts_with(|c: char| c.is_ascii_alphabetic()));
@@ -358,6 +360,9 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");
         eprintln!("       probe zero <store> trace <case>  run the case from the store's trace build: a row a step, a column a stream,");
         eprintln!("                            [--json]     what each was given and the lines that ran; or the events and steps as JSON");
+        eprintln!("       probe zero <store> kernel '<call>' --wgsl|--air   the call's array made on the GPU, a thread an item: the function its");
+        eprintln!("                                         one line applies across a range run as a kernel on WebGPU or Metal, and");
+        eprintln!("                                         the array compared word for word with the CPU's loop (hop sixty-two)");
         eprintln!("       probe zero meter <store|dir>     the lines that use a non-zeroic form: a store's, listed, or a row a store");
         eprintln!("       probe zero names <store>         every name with a `$` or `[]`: how it is declared, and each use");
         eprintln!("       probe zero test [dir] [path]     run every store under dir (suite/zero)");
@@ -603,6 +608,35 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        // `probe zero <store> kernel '<call>' --wgsl|--air` (hop sixty-two,
+        // fm3 question 211): the call's array made by a kernel on the GPU
+        // and by the CPU's loop, compared word for word
+        Some(store) if args.get(1).map(String::as_str) == Some("kernel") && args.len() >= 3 => {
+            let gpus: Vec<kernel::Gpu> = args[2..].iter().filter_map(|a| match a.as_str() {
+                "--wgsl" => Some(kernel::Gpu::Wgsl),
+                "--air" => Some(kernel::Gpu::Air),
+                _ => None,
+            }).collect();
+            let Some(call) = args[2..].iter().find(|a| !a.starts_with("--")) else { return usage() };
+            if gpus.is_empty() {
+                eprintln!("the kernel form says which GPU: `--wgsl` (WebGPU in headless Chrome) or `--air` (Metal)");
+                return ExitCode::FAILURE;
+            }
+            let mut ok = true;
+            for gpu in gpus {
+                match kernel::compare(Path::new(store), call, gpu, &policy, level) {
+                    Ok(c) => {
+                        print!("{}", c.said());
+                        ok &= c.first_differing.is_none();
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        ok = false;
+                    }
+                }
+            }
+            if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
         }
         // `probe zero <store> trace <case>`: the case run from the
         // store's trace build, and what it wrote down (fm3 tracer.md)

@@ -471,7 +471,7 @@ fn watched<T: Send>(jit: &emit::jit::JitCode, f: impl FnOnce() -> T + Send) -> T
 /// an output buffer, the child reads it back on the trap, so a failed
 /// check can name its site; the results and the text come back through
 /// the pipe otherwise
-fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>) -> Result<Got, String> {
+pub(crate) fn forked<F: FnOnce() -> Result<Got, String>>(f: F, jit: Option<&emit::jit::JitCode>) -> Result<Got, String> {
     forked_traced(f, jit, false).0
 }
 

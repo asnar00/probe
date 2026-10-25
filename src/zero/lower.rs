@@ -4346,6 +4346,144 @@ pub fn resolve_case(lowered: &Lowered, case: &Case, file: &str, int_bits: u32) -
     Ok(Call { func, args: vals, nrets: info.results.len(), times, expect: case.expect.clone(), context: case.context.clone(), input: case.input.clone().unwrap_or_default().into_bytes(), input_at: bytes_at(&case.input_at), people: Vec::new() })
 }
 
+/// The kernel form (hop sixty-two, fm3 question 211): what a call such
+/// as `frame (64, 0.5)` asks for, where the function called gives an
+/// array by applying a function of one item across a range, `px[] <<
+/// pixel ([0 to side * side], side, angle)`. Nothing here lowers
+/// anything: it reads the store's own text to say which function is
+/// applied, what it is handed for item k, and the call's values, so
+/// that `kernel.rs` can write the kernel that calls that function for
+/// one item and the runner can call the whole function natively
+pub struct KernelPlan {
+    /// the function called, its IR name and its zero name
+    pub caller: String,
+    pub caller_said: String,
+    /// the IR type of its result's items, and whether the result is a
+    /// queue (else a ring)
+    pub item: String,
+    pub queue: bool,
+    /// its parameters' names and IR types, and the call's values for them
+    pub params: Vec<(String, String)>,
+    pub values: Vec<KernelValue>,
+    /// the function applied to each item: its IR name, its zero name, its
+    /// result's IR type, and what each of its parameters is handed
+    pub callee: String,
+    pub callee_said: String,
+    pub gives: String,
+    pub hands: Vec<KernelArg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KernelValue {
+    Int(i64),
+    Float(f64),
+}
+
+/// what the function applied to each is handed: the item of the range
+/// (its first value, and the parameter's IR type), one of the caller's
+/// parameters, or a literal written there (its value and IR type)
+#[derive(Clone, Debug, PartialEq)]
+pub enum KernelArg {
+    Place { start: i64, ty: String },
+    Param(usize),
+    Lit(KernelValue, String),
+}
+
+pub fn kernel_plan(store: &Store, l: &Lowered, text: &str) -> Result<KernelPlan, String> {
+    const SHAPE: &str = "the kernel form runs a function whose body is one line giving its array as a function of one item applied across a range, the other arguments its own parameters or numbers written out: `px[] << pixel ([0 to side * side], side, angle)`";
+    let file = "the kernel's call";
+    let call = super::syntax::parse_call(text.trim(), file, 0, &std::collections::HashSet::new()).map_err(|e| e.to_string())?;
+    let ExprKind::Phrase(parts) = &call.kind else { return Err(format!("'{}' is not a call", text)) };
+    let lit = |e: &Expr| -> Option<KernelValue> {
+        match &e.kind {
+            ExprKind::Int(v) => Some(KernelValue::Int(*v)),
+            ExprKind::Float(f) => f.parse().ok().map(KernelValue::Float),
+            ExprKind::Neg(x) => match &x.kind {
+                ExprKind::Int(v) => Some(KernelValue::Int(-v)),
+                ExprKind::Float(f) => f.parse::<f64>().ok().map(|v| KernelValue::Float(-v)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let is_float = |t: &Ty| matches!(t, Ty::Num(n) if n == "float" || n.starts_with('f') || n == "scalar" || n == "number");
+    let fits = |v: &KernelValue, t: &Ty| match v {
+        KernelValue::Int(_) => matches!(t, Ty::Num(_)),
+        KernelValue::Float(_) => is_float(t),
+    };
+    let (cands, args) = find_methods(&l.funcs, parts, &|_| false, file, 0).map_err(|e| e.to_string())?;
+    let values: Vec<KernelValue> = args.iter().map(|a| lit(a).ok_or_else(|| format!("the kernel's call is given numbers written out, `frame (64, 0.5)`; '{}' has an argument that is not one", text.trim()))).collect::<Result<_, _>>()?;
+    let found: Vec<&FnInfo> = cands.into_iter().filter(|f| f.params.iter().zip(&values).all(|((_, t), v)| fits(v, t))).collect();
+    let info = match found.as_slice() {
+        [one] => *one,
+        [] => return Err(format!("no method of the function called takes {}", text.trim())),
+        _ => return Err(format!("'{}' has more than one method taking these numbers: the kernel form wants one", text.trim())),
+    };
+    let said = |f: &FnInfo| f.parts.iter().filter_map(|p| if let NamePart::Word(w) = p { Some(w.as_str()) } else { None }).collect::<Vec<_>>().join(" ");
+    let item = match (info.results.as_slice(), info.gives.first()) {
+        ([(_, Ty::Stream(e))], Some(NameMark::Array)) => e.ir(),
+        _ => return Err(format!("'{}' does not give an array: {}", said(info), SHAPE)),
+    };
+    // the function's text: its one line
+    let decl = store
+        .features
+        .iter()
+        .filter(|f| f.name == info.feature)
+        .flat_map(|f| f.code.decls.iter())
+        .find_map(|d| match d {
+            Decl::Fn(fd) if fd.name == info.parts && fd.params().map(|p| &p.name).eq(info.params.iter().map(|(n, _)| n)) => Some(fd),
+            _ => None,
+        })
+        .ok_or_else(|| format!("'{}' is not written in the store", said(info)))?;
+    // (the push of a result is the assignment it is written in place
+    // of, in the tree, log 151)
+    let item_expr = match decl.body.as_slice() {
+        [Stmt::Assign { targets, value, .. }] if targets.len() == 1 && targets[0].arr => value,
+        _ => return Err(format!("'{}': {}", said(info), SHAPE)),
+    };
+    let ExprKind::Phrase(inner) = &item_expr.kind else { return Err(format!("'{}': {}", said(info), SHAPE)) };
+    let names: Vec<String> = info.params.iter().map(|(n, _)| n.clone()).collect();
+    let (cands, args) = find_methods(&l.funcs, inner, &|n| names.iter().any(|m| m == n), file, 0).map_err(|e| e.to_string())?;
+    let ranges: Vec<usize> = (0..args.len()).filter(|&i| matches!(args[i].kind, ExprKind::Range { .. })).collect();
+    let [at] = ranges.as_slice() else { return Err(format!("'{}': {}", said(info), SHAPE)) };
+    let found: Vec<&FnInfo> = cands.into_iter().filter(|f| f.marks.get(*at) == Some(&NameMark::Plain) && f.results.len() == 1).collect();
+    let [callee] = found.as_slice() else { return Err(format!("'{}': {}", said(info), SHAPE)) };
+    let mut hands = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        let ty = callee.params[i].1.ir();
+        hands.push(match &a.kind {
+            ExprKind::Range { from, .. } => match lit(from) {
+                Some(KernelValue::Int(start)) => KernelArg::Place { start, ty },
+                _ => return Err(format!("'{}': the range's first value is a whole number written out, `[0 to n]`", said(info))),
+            },
+            ExprKind::Name(n) if names.contains(n) => KernelArg::Param(names.iter().position(|m| m == n).unwrap()),
+            // (a bare word in a call's brackets is read as a phrase)
+            ExprKind::Phrase(ps) if matches!(ps.as_slice(), [Part::Word(n)] if names.contains(n)) => {
+                let [Part::Word(n)] = ps.as_slice() else { unreachable!() };
+                KernelArg::Param(names.iter().position(|m| m == n).unwrap())
+            }
+            _ => match lit(a) {
+                Some(v) => KernelArg::Lit(v, ty),
+                None => return Err(format!("'{}': {}", said(info), SHAPE)),
+            },
+        });
+    }
+    // a queue's items are a plain run, a ring's twice over (log 89)
+    let body = l.ir.split(&format!("\nfn {}(", info.ir)).nth(1).and_then(|t| t.split("\nfn ").next()).unwrap_or("");
+    Ok(KernelPlan {
+        caller: info.ir.clone(),
+        caller_said: said(info),
+        item,
+        queue: body.contains("__queue_"),
+        params: info.params.iter().map(|(n, t)| (n.clone(), t.ir())).collect(),
+        values,
+        callee: callee.ir.clone(),
+        callee_said: said(callee),
+        gives: callee.results[0].1.ir(),
+        hands,
+    })
+}
+
 /// the refusal of an ambiguous call, naming the methods that contend
 fn ambiguous(cands: &[FnInfo], amb: &[usize], file: &str, line: usize) -> Error {
     let names: Vec<String> = amb.iter().map(|&i| spelled(&cands[i])).collect();

@@ -11,7 +11,7 @@
 # The suite's driver: the memory buffer is `size` bytes, its start the
 # image in mem.bin; the parameters buffer holds the area's offset; one
 # thread runs; the area's text (up to its first NUL) is printed.
-import sys, ctypes, json, Metal, Foundation
+import sys, os, time, ctypes, json, Metal, Foundation
 
 def pipeline(path):
     dev = Metal.MTLCreateSystemDefaultDevice()
@@ -75,9 +75,15 @@ if sys.argv[1] == "--kernel":
     view[:len(data)] = data
     params = dev.newBufferWithLength_options_(8, 0)
     memoryview(params.contents().as_buffer(8))[:] = area_off.to_bytes(8, "little")
+    t0 = time.perf_counter()
     run(dev, pso, mem, params, n, group)
+    took = (time.perf_counter() - t0) * 1e3
     out = (ctypes.c_int64 * n).from_buffer(mem.contents().as_buffer(mem_len), area_off)
     print("area:", list(out))
+    # PROBE_TIME=1: the dispatch's milliseconds, from the command buffer's
+    # making to its completion (`probe zero <store> kernel --air`)
+    if os.environ.get("PROBE_TIME"):
+        print("time: %.3f ms" % took)
     sys.exit(0)
 path, fname = sys.argv[1], sys.argv[2]
 n = int(sys.argv[3]) if len(sys.argv) > 3 else 8
