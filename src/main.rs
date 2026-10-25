@@ -458,10 +458,13 @@ fn main() -> ExitCode {
             };
             let dir = rest
                 .iter()
-                .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu" && **a != "air")
+                .find(|a| **a != "wasm" && **a != "riscv" && **a != "arm-qemu" && **a != "air" && **a != "wgsl")
                 .copied()
                 .unwrap_or("suite");
-            match suite::run_dir_at(dir, backend, level, &|p| {
+            // the sixth path: the air path's build, its kernels printed as
+            // WGSL and run through WebGPU (suite::run_dir_wgsl)
+            let run = |dir: &str, backend: suite::Backend, level: usize, adjust: &dyn Fn(ssa::Policy) -> ssa::Policy| if rest.contains(&"wgsl") { suite::run_dir_wgsl(dir, level, adjust) } else { suite::run_dir_at(dir, backend, level, adjust) };
+            match run(dir, backend, level, &|p| {
                 let mut p = p;
                 if let Some(t) = int_override {
                     p.int = t;

@@ -159,6 +159,24 @@ pub fn run_dir_at(
     level: usize,
     adjust: &dyn Fn(ssa::Policy) -> ssa::Policy,
 ) -> Result<Report, String> {
+    run_dir_with(dir, backend, false, level, adjust)
+}
+
+/// `probe test wgsl`: the sixth path, the GPU through WebGPU in headless
+/// Chrome (src/emit_wgsl.rs, tools/driver_webgpu.js). Each module is built
+/// as for air, under the air platform file, so its data, slab and area are
+/// the Metal driver's; only its kernel cases run
+pub fn run_dir_wgsl(dir: &str, level: usize, adjust: &dyn Fn(ssa::Policy) -> ssa::Policy) -> Result<Report, String> {
+    run_dir_with(dir, Backend::Air, true, level, adjust)
+}
+
+fn run_dir_with(
+    dir: &str,
+    backend: Backend,
+    wgsl: bool,
+    level: usize,
+    adjust: &dyn Fn(ssa::Policy) -> ssa::Policy,
+) -> Result<Report, String> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {}", dir, e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -285,6 +303,7 @@ pub fn run_dir_at(
                     run_arm_qemu(&module, &policy, &src, native_enc.as_ref().unwrap(), group, trap, &name, &scratch, level, &mut report);
                 }
             }
+            Backend::Air if wgsl => run_wgsl(&module, &platform, &cases, &name, &scratch, &mut report),
             Backend::Air => run_air(&module, &policy, &platform, &src, &cases, &name, &scratch, level, &mut report),
         }
     }
@@ -2135,6 +2154,79 @@ fn run_air(
 }
 
 // ---------------------------------------------------------------------------
+// the GPU through WebGPU: the kernel printed as WGSL, run in headless Chrome
+
+/// a module's kernel cases on WebGPU, every one of them in one Chrome: the
+/// words of the area against the case's, as `run_air` compares them. What
+/// is not a kernel is skipped in a line, as wasm skips every kernel; a
+/// module the emitter refuses is skipped with the emitter's line
+fn run_wgsl(module: &ssa::Module, platform: &crate::platform::Platform, cases: &[Case], name: &str, scratch: &std::path::Path, report: &mut Report) {
+    let mut kept = Vec::new();
+    for c in cases {
+        if c.func != "__kernel" {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: wgsl runs kernels only in this hop\n", name, c.text));
+        } else if c.checks {
+            report.skipped += 1;
+            report.log.push_str(&format!("skip  {:<16} {}: the GPU does not stop at a failed check\n", name, c.text));
+        } else {
+            kept.push(c.clone());
+        }
+    }
+    if kept.is_empty() {
+        return;
+    }
+    let c = match crate::emit_wgsl::compile(module, platform) {
+        Ok(c) => c,
+        Err(e) => {
+            for case in &kept {
+                report.skipped += 1;
+                report.log.push_str(&format!("skip  {:<16} {}: {}\n", name, case.text, e));
+            }
+            return;
+        }
+    };
+    let got = (|| -> Result<Vec<Vec<i64>>, String> {
+        let text = scratch.join(format!("{}.wgsl", name));
+        let json = scratch.join(format!("{}.wgsl.json", name));
+        std::fs::write(&text, &c.text).map_err(|e| e.to_string())?;
+        let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(&json, format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}", data_hex, c.layout.slab)).map_err(|e| e.to_string())?;
+        let mut cmd = Command::new("node");
+        cmd.arg("tools/driver_webgpu.js").arg("--kernel").arg(&text).arg(&json);
+        for case in &kept {
+            let (n, g, _) = kernel_shape(case)?;
+            cmd.args([n.to_string(), g.to_string()]);
+        }
+        let out = cmd.output().map_err(|e| format!("node: {}", e))?;
+        let said = String::from_utf8_lossy(&out.stderr);
+        let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap_or("").lines().filter(|l| l.starts_with("area: [")).collect();
+        if !out.status.success() || lines.len() != kept.len() {
+            let why: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+            return Err(format!("the driver: {}", if why.is_empty() { "no output".to_string() } else { why.join(" | ") }));
+        }
+        lines
+            .iter()
+            .map(|l| {
+                let words = l.trim().strip_prefix("area: [").and_then(|t| t.strip_suffix(']')).ok_or("the driver's area")?;
+                words.split(',').map(|w| w.trim().parse::<i64>().map_err(|e| e.to_string())).collect::<Result<Vec<i64>, String>>()
+            })
+            .collect()
+    })();
+    match got {
+        Ok(areas) => {
+            for (case, all) in kept.iter().zip(areas) {
+                finish_case(report, name, case, Ok(all.into_iter().take(case.expected.len()).collect()));
+            }
+        }
+        Err(e) => {
+            report.failed += kept.len();
+            report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // arm64 under qemu (bare-metal aarch64 virt machine)
 
 #[allow(clippy::too_many_arguments)]
@@ -2488,6 +2580,14 @@ pub(crate) mod tests {
         let _turn = boot_turn(); // the driver is timed too
         let report = super::run_dir("suite", super::Backend::Air).expect("suite runs");
         assert_eq!(report.failed, 0, "\n{}", report.log);
+    }
+
+    /// this Mac's GPU again, through WebGPU in headless Chrome: the kernels
+    #[test]
+    fn regression_suite_wgsl() {
+        let report = super::run_dir_wgsl("suite", crate::opt::MAX_LEVEL, &|p| p).expect("suite runs");
+        assert_eq!(report.failed, 0, "\n{}", report.log);
+        assert!(report.passed >= 6, "\n{}", report.log);
     }
 
     #[test]

@@ -129,6 +129,7 @@ None of them contains a single hand-written opcode.
 - `riscv64` (`src/emit_rv.rs`) — bare metal on qemu-system-riscv64, with the runtime harness (UART printing, exit) generated in the project's own SSA. The classed vector types are RVV registers, each rule setting its own vtype (`vsetivli`).
 - `wasm32` (`src/emit_wasm.rs`) — module emission, executed by node via `src/driver.js`; control flow becomes nested `block`/`loop`/`if` from the dominator tree (`src/structure.rs`), a dispatcher loop only for an irreducible graph.
 - `air` (`src/emit_air.rs`, `src/bitcode.rs`) — Apple's GPUs: the SSA as LLVM bitcode in Apple's AIR dialect, in a `.metallib` the Metal driver compiles for whatever GPU it finds — written byte by byte by our own bitstream writer, with none of Apple's tools in the path. Pointers are offsets into one memory buffer (as on wasm), `data` and `scratch` live there, a `__kernel(mem, area, id)` — or `(mem, area, id, lane, group)` — becomes the compute kernel; `lib/gpu.ssa`'s a `group tmp: array(i64, 64)` item is the threadgroup's memory here and writable data everywhere else, `group_sync()` its barrier, and `simd_sum x`, shuffles and votes are the simdgroup's (`lib/gpu.ssa`: Apple's intrinsics here, the one-thread forms elsewhere); a `;! __kernel n g [m] -> words` directive runs a kernel as a suite case — dispatched here, as fibres taking turns at every barrier on a machine (`lib/fibre.ssa`, a stack switch the platform provides), the groups dealt across m OS threads under the JIT and m cores on the qemu machines (`lib/core.ssa`: PSCI on arm64, a parking preamble and mailbox on riscv64); vectors reach it whole (`<4 x float>`, `air.sqrt.v4f32`); recursion, which Metal has not, is left out and reported. `tools/driver_metal.py` dispatches it (pyobjc).
+- `wgsl` (`src/emit_wgsl.rs`) — the same GPU through WebGPU: a module's kernel printed as WGSL text out of the same pruned module the AIR emitter writes bitcode from, under the same platform file, so the data image, slab and area `driver_metal.py` lays out run unchanged. Memory is one `var<storage, read_write>` array of 32-bit words with pointers as offsets, group items one `var<workgroup>` array, `group_sync()` `workgroupBarrier()`, the `simd_*` rules subgroup operations behind `enable subgroups;`. WGSL has no 64-bit integer, so an `i64`, a pointer, anything of 33 to 64 bits is a pair of words (`vec2<u32>`): add and subtract with carry, the low 64 bits of a product, shifts, comparisons and the bitwise three are written out, and what is not yet (`div` and `rem` on a pair, a store narrower than a word, f16, vectors, function values) is refused by name. The structure is the wasm emitter's walk over the dominator tree, with a `brk` variable where a branch leaves more than the innermost loop. `tools/driver_webgpu.js` (node, no package) runs it in headless Chrome over the debugging protocol, on a port Chrome chooses and a profile of its own, reads the compiler's messages (the only WGSL validator on the machine), dispatches and prints the area as the Metal driver does; `probe test wgsl` is the sixth path, kernels only.
 
 Shared by the register machines and wasm:
 
@@ -173,6 +174,7 @@ cargo run -- test arm-qemu     # qemu-system-aarch64
 cargo run -- test --platform=arm64-noneon   # the same machine, every vector operation lane by lane
 cargo run -- test riscv --platform=riscv64-nov   # likewise without RVV
 cargo run -- test air          # this Mac's GPU, through Metal
+cargo run -- test wgsl         # the same GPU through WebGPU in headless Chrome: the kernels
 
 # a program for the GPU: a .metallib with none of Apple's tools
 cargo run -- compile examples/gpu.ssa air
@@ -183,6 +185,10 @@ python3 tools/driver_metal.py --kernel target/air/reduce.metallib target/air/red
 # ... and the simdgroup summing across its 32 threads
 cargo run -- compile examples/simd.ssa air
 python3 tools/driver_metal.py --kernel target/air/simd.metallib target/air/simd.air.json 64
+# the same kernels as WGSL (target/wgsl/reduce.wgsl, to read), through WebGPU
+cargo run -- compile examples/reduce.ssa wgsl
+node tools/driver_webgpu.js --kernel target/wgsl/reduce.wgsl target/wgsl/reduce.wgsl.json 256 64
+node tools/driver_webgpu.js --adapter     # what the adapter says of subgroups
 
 # the optimization pipeline: -O<n> works on any command, and `tiers`
 # compiles at every prefix to show the gradual-optimization story
@@ -244,7 +250,7 @@ cargo run -- live examples/fib.ssa fib 25
 
 `history.md` has a short entry for every commit; `handover.md` is the working knowledge for whoever picks the project up next; `vectors.md` is a survey of where vectors, GPUs and the AI number formats would fit.
 
-Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wasm), `node`, `qemu`; for the GPU, `pyobjc-framework-Metal` (the driver is Python) and, to inspect what we emit, brew llvm's `llvm-dis`. The learned `targets/*.encodings.json` files are checked in, so the backends and suite work without re-learning.
+Toolchain expectations (macOS/arm64 host): `llvm-mc` (brew llvm), `wabt` (wat2wasm), `node`, `qemu`; for the GPU, `pyobjc-framework-Metal` (the driver is Python), Google Chrome for the WebGPU path, and, to inspect what we emit, brew llvm's `llvm-dis`. The learned `targets/*.encodings.json` files are checked in, so the backends and suite work without re-learning.
 
 ## zero
 
@@ -440,7 +446,7 @@ What is here:
 - **Four backends and their variants**, the fourth Apple's GPU through a `.metallib` we write ourselves; on the machines each class of value — integer, float, vector — crosses a call in its own registers (and past eight, on the stack), and a caller from Rust reaches classed functions through a wrapper the compiler generates.
 - **The GPU's model everywhere.** `group` memory, a barrier and the simdgroup operations are library functions that mean the same on a machine — fibres run a group by turns on one thread, a simdgroup is an exchange through a table; `thread()` reads a platform-named register; a kernel's groups are dealt across OS threads under the JIT, or across four cores on the qemu boards.
 - **Six bootable kernels.** Hello world; an echo with system calls and interrupt-driven input; a clock on the timer interrupt; two preempted tasks; tasks sleeping to exact times on a tickless timer, with `at`/`after` callbacks and tasks that come and go; four cores sharing a kernel's groups.
-- **All of it differentially verified.** The suite on five execution paths under every policy, `;! __kernel` running a program's kernel on the GPU and on every machine, `-> check` for what must fail (a thread that skips a `simd_*` fails a check on every machine, where the GPU reads stale words), the oracle (on the CPU and the GPU), the scorecards, the fuzzer (`--air` puts the GPU in its panel), the model tests.
+- **All of it differentially verified.** The suite on five execution paths, and its kernels on a sixth (WebGPU) under every policy, `;! __kernel` running a program's kernel on the GPU and on every machine, `-> check` for what must fail (a thread that skips a `simd_*` fails a check on every machine, where the GPU reads stale words), the oracle (on the CPU and the GPU), the scorecards, the fuzzer (`--air` puts the GPU in its panel), the model tests.
 
 Deliberately not here yet (`future-work.md` has the queue, `handover.md` the reasons):
 
