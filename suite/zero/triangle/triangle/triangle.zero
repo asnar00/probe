@@ -1,0 +1,58 @@
+on (float s) << sine (float a)
+    float t = a - 6.2831853 * float (int (a / 6.2831853))
+    float u = t - 6.2831853 if (t > 3.1415927) else t + 6.2831853 if (t < -3.1415927) else t
+    float q = u * u
+    s << u * (1.0 - q / 6.0 * (1.0 - q / 20.0 * (1.0 - q / 42.0 * (1.0 - q / 72.0 * (1.0 - q / 110.0 * (1.0 - q / 156.0))))))
+
+on (float c) << cosine (float a)
+    c << sine (a + 1.5707963)
+
+on (int f) << snapped (float v)
+    f << int (v * 16.0 + 0.5)
+
+on (int e) << edge (int ax, int ay, int bx, int by, int px, int py)
+    e << (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+
+on (uint32 c) << rgba (uint32 r, uint32 g, uint32 b, uint32 a)
+    c << r + g * 256 + b * 65536 + a * 16777216
+
+on (uint32 c) << pixel (int i, int side, float angle)
+    int y = int ((float (i) + 0.5) / float (side))
+    int x = i - y * side
+    float h = float (side) * 0.5
+    float r = float (side) * 0.375
+    float b = angle + 2.0943951
+    float d = angle + 2.0943951 * 2.0
+    int ax = snapped (h + r * cosine (angle))
+    int ay = snapped (h - r * sine (angle))
+    int bx = snapped (h + r * cosine (b))
+    int by = snapped (h - r * sine (b))
+    int cx = snapped (h + r * cosine (d))
+    int cy = snapped (h - r * sine (d))
+    int px = x * 16 + 8
+    int py = y * 16 + 8
+    bool inside = (edge (ax, ay, bx, by, px, py) <= 0) and (edge (bx, by, cx, cy, px, py) <= 0) and (edge (cx, cy, ax, ay, px, py) <= 0)
+    c << rgba (255, 160, 0, 255) if (inside) else rgba (16, 16, 32, 255)
+
+on (uint32 px[]) << frame (int side, float angle)
+    px[] << pixel ([0 to side * side], side, angle)
+
+on (uint32 c) << centre at (int k)
+    uint32 f[] = frame (8, float (k) * 0.5)
+    c << f[36]
+
+on (uint32 c) << corner at (int k)
+    uint32 f[] = frame (8, float (k) * 0.5)
+    c << f[0]
+
+on written (uint32 c)
+    out$ << c << " "
+
+on said frame()
+    written (frame (8, 0.0))
+
+on (bool same) << a third of a turn()
+    same << frame (8, 0.0) [==] frame (8, 2.0943951)
+
+on (bool same) << half a radian()
+    same << frame (8, 0.5) [==] frame (8, 0.0)
