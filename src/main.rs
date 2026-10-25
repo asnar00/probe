@@ -5,6 +5,7 @@ mod emit;
 mod emit_air;
 mod emit_rv;
 mod emit_wasm;
+mod emit_wgsl;
 mod cost;
 mod footprint;
 mod fuzz;
@@ -144,6 +145,7 @@ fn main() -> ExitCode {
             cmd_learn(&args[1], out.as_deref())
         }
         Some("compile") if args.len() >= 3 && args[2] == "air" => cmd_compile_air(&args[1], level, policy),
+        Some("compile") if args.len() >= 3 && args[2] == "wgsl" => cmd_compile_wgsl(&args[1], level, policy),
         Some("compile") if args.len() >= 2 => cmd_compile(&args[1], level, policy),
         Some("live") if args.len() >= 3 => {
             let fargs: Result<Vec<i64>, _> = args[3..].iter().map(|a| parse_arg(a)).collect();
@@ -727,6 +729,33 @@ fn cmd_compile(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Err(e) => fail(&e),
+    }
+}
+
+/// `probe compile x.ssa wgsl`: the kernel's WGSL text in target/wgsl/, to
+/// read, and the layout tools/driver_webgpu.js reads (the AIR path's: the
+/// same module under the same platform file, so the same data and slab)
+fn cmd_compile_wgsl(path: &str, level: usize, policy: ssa::Policy) -> ExitCode {
+    let result = (|| -> Result<(), String> {
+        let platform = platform::Platform::load("air")?;
+        let policy = platform.adjust(policy);
+        let module = load_module(path, level, policy)?;
+        let c = emit_wgsl::compile(&module, &platform)?;
+        let stem = std::path::Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
+        let dir = std::path::Path::new("target/wgsl");
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{}.wgsl", stem)), &c.text).map_err(|e| e.to_string())?;
+        let data_hex: String = c.layout.data.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(dir.join(format!("{}.wgsl.json", stem)), format!("{{\"data\":\"{}\",\"slab\":{},\"kernel\":true}}\n", data_hex, c.layout.slab)).map_err(|e| e.to_string())?;
+        println!("target/wgsl/{}.wgsl: {} lines of WGSL, {} bytes of data, {} bytes of scratch per thread{}", stem, c.text.lines().count(), c.layout.data.len(), c.layout.slab, if c.subgroups { ", subgroups" } else { "" });
+        for (f, why) in &c.skipped {
+            println!("  left out: {} ({})", f, why);
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e),
     }
 }

@@ -107,7 +107,7 @@ const CAST_BITCAST: u32 = 11;
 /// LLVM's attribute kinds
 const ATTR_CONVERGENT: u64 = 43;
 /// each thread's header, at the start of its slab: [simd thread index, simd width]
-const HEADER: u64 = 16;
+pub(crate) const HEADER: u64 = 16;
 
 /// which functions AIR cannot have — a function that can reach itself,
 /// and everything that can reach one — with why, given the
@@ -146,7 +146,7 @@ pub fn left_out(module: &Module, taken: &[String]) -> (Vec<bool>, Vec<(String, S
 
 /// what the kernel cannot reach: Apple's compiler takes every function
 /// in a module, so the rest — a library's unused parts — is left out too
-fn unreachable_from_kernel(module: &Module, taken: &[String], natives: &Natives) -> Vec<bool> {
+pub(crate) fn unreachable_from_kernel(module: &Module, taken: &[String], natives: &Natives) -> Vec<bool> {
     // a call a platform rule takes over reaches no library function
     let edges = call_edges(module, taken, Some(natives));
     let mut seen = vec![false; module.funcs.len()];
@@ -313,7 +313,7 @@ fn no_inline(module: &Module, out: &[bool], natives: &Natives, budget: u64) -> (
 /// what a rule asks the emitter for: its one-line template (`air.sqrt.f32
 /// = sqrt(f32) -> f32`), or the mnemonic of its first line when it is
 /// written as a header with lines, as a module's own block is
-fn rule_key(native: &crate::platform::Native) -> String {
+pub(crate) fn rule_key(native: &crate::platform::Native) -> String {
     let line = &native.rule.lines[0];
     line.template.clone().unwrap_or_else(|| line.mnemonic.clone())
 }
@@ -355,7 +355,7 @@ pub fn skipped_names(module: &Module) -> Vec<String> {
     left_out(module, &taken).1.into_iter().map(|(n, _)| n).collect()
 }
 
-fn address_taken(module: &Module) -> Vec<String> {
+pub(crate) fn address_taken(module: &Module) -> Vec<String> {
     let mut taken: Vec<String> = Vec::new();
     for f in &module.funcs {
         for inst in f.blocks.iter().flat_map(|b| &b.insts) {
@@ -367,6 +367,18 @@ fn address_taken(module: &Module) -> Vec<String> {
         }
     }
     taken
+}
+
+/// the program's kernel's arguments: (mem, area, id), or with its place in
+/// its group and the group's number, (mem, area, id, tid, group) — the GPU
+/// paths' one signature check (AIR and WGSL)
+pub(crate) fn kernel_arity(module: &Module) -> Result<usize, String> {
+    let kf = module.func("__kernel").ok_or("no __kernel")?;
+    let n = kf.params.len();
+    if n != 3 && n != 5 {
+        return Err("__kernel takes (mem, area, id) or (mem, area, id, tid, group)".into());
+    }
+    Ok(n)
 }
 
 pub fn compile_with(module: &Module, platform: &Platform) -> Result<Compiled, String> {
@@ -491,11 +503,7 @@ pub fn compile_under(module: &Module, platform: &Platform, budget: u64) -> Resul
     }
     let has_kernel = module.funcs.iter().position(|f| f.name == "__kernel").is_some_and(|i| !out[i]);
     let kernel = if has_kernel {
-        let kf = module.func("__kernel").unwrap();
-        cx.kernel_arity = kf.params.len();
-        if cx.kernel_arity != 3 && cx.kernel_arity != 5 {
-            return Err("__kernel takes (mem, area, id) or (mem, area, id, tid, group)".into());
-        }
+        cx.kernel_arity = kernel_arity(module)?;
         let mut params = vec![ptr_ty, ptr_ty, i32t];
         if cx.kernel_arity == 5 {
             params.extend([i32t, i32t]);
@@ -633,7 +641,7 @@ fn intrinsic_int_bits(key: &str, j: usize) -> Option<u32> {
 
 /// the container of a width: i1, else 8/16/32/64 bits (a multiple of
 /// 64 beyond that)
-fn cont(bits: u32) -> u32 {
+pub(crate) fn cont(bits: u32) -> u32 {
     if bits <= 1 {
         1
     } else if bits <= 8 {
@@ -645,6 +653,66 @@ fn cont(bits: u32) -> u32 {
     } else {
         64 * bits.div_ceil(64)
     }
+}
+
+/// which values are threadgroup addresses: `addr` of a group item, and
+/// whatever arithmetic, casts and block arguments carry it. One may not
+/// leave the function or go to memory: there is no pointer type that says
+/// which memory it is in (AIR and WGSL alike)
+pub(crate) fn group_addresses(f: &Function, group_offsets: &HashMap<String, i64>) -> Result<std::collections::HashSet<u32>, String> {
+    let mut tagged: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    loop {
+        let before = tagged.len();
+        for b in &f.blocks {
+            for inst in &b.insts {
+                match inst {
+                    Inst::Addr { dst, name } if group_offsets.contains_key(name.as_str()) => {
+                        tagged.insert(dst.0);
+                    }
+                    Inst::Bin { dst, lhs, rhs, .. } if tagged.contains(&lhs.0) || tagged.contains(&rhs.0) => {
+                        tagged.insert(dst.0);
+                    }
+                    Inst::PtrAdd { dst, base, .. } | Inst::Cast { dst, src: base, .. } if tagged.contains(&base.0) => {
+                        tagged.insert(dst.0);
+                    }
+                    Inst::Jmp { target, args } => {
+                        for (&p, a) in f.blocks[target.0 as usize].params.iter().zip(args) {
+                            if tagged.contains(&a.0) {
+                                tagged.insert(p.0);
+                            }
+                        }
+                    }
+                    Inst::Br { then_target, then_args, else_target, else_args, .. } => {
+                        for (t, args) in [(then_target, then_args), (else_target, else_args)] {
+                            for (&p, a) in f.blocks[t.0 as usize].params.iter().zip(args) {
+                                if tagged.contains(&a.0) {
+                                    tagged.insert(p.0);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if tagged.len() == before {
+            break;
+        }
+    }
+    for b in &f.blocks {
+        for inst in &b.insts {
+            let escapes = match inst {
+                Inst::Store { val, .. } => tagged.contains(&val.0),
+                Inst::Call { args, .. } | Inst::CallInd { args, .. } => args.iter().any(|a| tagged.contains(&a.0)),
+                Inst::Ret { vals } => vals.iter().any(|v| tagged.contains(&v.0)),
+                _ => false,
+            };
+            if escapes {
+                return Err("a group address is used where it is computed: it cannot be stored, passed or returned".into());
+            }
+        }
+    }
+    Ok(tagged)
 }
 
 impl Cx<'_> {
@@ -713,59 +781,7 @@ impl Cx<'_> {
     /// may not leave the function or go to memory: there is no pointer
     /// type that says which memory it is in
     fn group_addresses(&self, f: &Function) -> Result<std::collections::HashSet<u32>, String> {
-        let mut tagged: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        loop {
-            let before = tagged.len();
-            for b in &f.blocks {
-                for inst in &b.insts {
-                    match inst {
-                        Inst::Addr { dst, name } if self.group_offsets.contains_key(name.as_str()) => {
-                            tagged.insert(dst.0);
-                        }
-                        Inst::Bin { dst, lhs, rhs, .. } if tagged.contains(&lhs.0) || tagged.contains(&rhs.0) => {
-                            tagged.insert(dst.0);
-                        }
-                        Inst::PtrAdd { dst, base, .. } | Inst::Cast { dst, src: base, .. } if tagged.contains(&base.0) => {
-                            tagged.insert(dst.0);
-                        }
-                        Inst::Jmp { target, args } => {
-                            for (&p, a) in f.blocks[target.0 as usize].params.iter().zip(args) {
-                                if tagged.contains(&a.0) {
-                                    tagged.insert(p.0);
-                                }
-                            }
-                        }
-                        Inst::Br { then_target, then_args, else_target, else_args, .. } => {
-                            for (t, args) in [(then_target, then_args), (else_target, else_args)] {
-                                for (&p, a) in f.blocks[t.0 as usize].params.iter().zip(args) {
-                                    if tagged.contains(&a.0) {
-                                        tagged.insert(p.0);
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if tagged.len() == before {
-                break;
-            }
-        }
-        for b in &f.blocks {
-            for inst in &b.insts {
-                let escapes = match inst {
-                    Inst::Store { val, .. } => tagged.contains(&val.0),
-                    Inst::Call { args, .. } | Inst::CallInd { args, .. } => args.iter().any(|a| tagged.contains(&a.0)),
-                    Inst::Ret { vals } => vals.iter().any(|v| tagged.contains(&v.0)),
-                    _ => false,
-                };
-                if escapes {
-                    return Err("a group address is used where it is computed: it cannot be stored, passed or returned".into());
-                }
-            }
-        }
-        Ok(tagged)
+        group_addresses(f, &self.group_offsets)
     }
 
     /// a value of type t back in canonical form in its container: the
