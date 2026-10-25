@@ -27,7 +27,7 @@ use std::process::Command;
 use std::time::Instant;
 
 /// the CPU's arena under the kernel form: the bootstrap's 64 KB holds a
-/// frame of a few thousand items, and this one a frame of a million
+/// frame of 32 a side and not one of 64, and this one a frame of a million
 const ARENA: usize = 1 << 24;
 /// ... and how many items it copies out
 const OUT: usize = 1 << 20;
