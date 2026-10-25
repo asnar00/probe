@@ -365,7 +365,7 @@ fn record(jit: &JitCode) -> Result<Vec<i64>, String> {
 
 /// the server's child: listen, say the port, take the client's connection,
 /// and run the server's part of the case
-fn server_child(jit: &JitCode, cut: &[(String, Vec<i64>)], delay: i64, out: &mut std::fs::File) -> Result<Side, String> {
+fn server_child(module: &ssa::Module, jit: &JitCode, cut: &[(String, Vec<i64>)], delay: i64, out: &mut std::fs::File) -> Result<Side, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     out.write_all(format!("{}\n", port).as_bytes()).map_err(|e| e.to_string())?;
@@ -390,8 +390,12 @@ fn server_child(jit: &JitCode, cut: &[(String, Vec<i64>)], delay: i64, out: &mut
     call(jit, "__wreal_begin", &[1])?;
     let mut start = None;
     let took = world(jit, 1, &mut link, &mut start, delay)?;
+    if module.func("__wreal_homes").is_some() {
+        call(jit, "__wreal_homes", &[1])?;
+    }
+    let thrown = if module.func("__wreal_thrown").is_some() { call(jit, "__wreal_thrown", &[])? } else { 0 };
     let log = record(jit)?;
-    Ok(Side { log, arrived: link.arrived.clone(), rows_out: link.rows_out, bytes_out: link.bytes_out, rows_in: link.rows_in, bytes_in: link.bytes_in, took, ..Default::default() })
+    Ok(Side { log, arrived: link.arrived.clone(), rows_out: link.rows_out, bytes_out: link.bytes_out, rows_in: link.rows_in, bytes_in: link.bytes_in, took, thrown, ..Default::default() })
 }
 
 /// the client's child: connect, make its context ready as a call's child
@@ -475,6 +479,9 @@ fn client_child(module: &ssa::Module, jit: &JitCode, port: u16, cut: &[(String, 
         }
         n => return Err(format!("{} results not supported by the runner", n)),
     };
+    if module.func("__wreal_homes").is_some() {
+        call(jit, "__wreal_homes", &[0])?;
+    }
     call(jit, "__wire_mode", &[0])?;
     let n = call(jit, "__out_len", &[])?;
     let bytes: Vec<u8> = (0..n).map(|i| call(jit, "__out_byte", &[i]).map(|b| b as u8)).collect::<Result<_, _>>()?;
@@ -540,7 +547,7 @@ fn ended(pid: i32, text: String, who: &str) -> Result<Side, String> {
 /// what each said. `func` is the case's twin
 #[allow(clippy::too_many_arguments)]
 pub fn real_run(module: &ssa::Module, jit: &JitCode, cut: &[(String, Vec<i64>)], setters: &[(String, Vec<i64>)], func: &str, args: &[i64], nrets: usize, delay: i64) -> Result<(Side, Side), String> {
-    let (spid, spipe) = spawn(jit, |out| server_child(jit, cut, delay, out))?;
+    let (spid, spipe) = spawn(jit, |out| server_child(module, jit, cut, delay, out))?;
     let mut sread = std::io::BufReader::new(spipe);
     let mut first = String::new();
     sread.read_line(&mut first).map_err(|e| e.to_string())?;
@@ -580,8 +587,11 @@ pub fn joined(client: &Side, server: &Side, delay: i64) -> Vec<i64> {
             rows.push(r);
         }
     }
-    rows.sort_by_key(|r| r[2]);
-    rows.into_iter().flatten().collect()
+    // (each place's lines of its homes at the end, 27, last, a stream at a time, as one process's record has them)
+    let (mut homes, mut rest): (Vec<[i64; 6]>, Vec<[i64; 6]>) = rows.into_iter().partition(|r| r[1] == 27);
+    rest.sort_by_key(|r| r[2]);
+    homes.sort_by_key(|r| (r[3], r[0]));
+    rest.into_iter().chain(homes).flatten().collect()
 }
 
 /// What step one of the real wire refuses, by name, each in one line that
@@ -734,7 +744,8 @@ pub fn run_real(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, ser
         store::Expect::Text(_) => format!("{:?}", ran.got.text.strip_suffix('\n').unwrap_or(&ran.got.text)),
         _ => ran.got.values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "),
     };
-    Ok(format!("{}\n{}, a {} wire: the client and the server in two processes on this machine, over the loopback\n→ {}\n{}{}{}", p.text.split('→').next().unwrap_or("").trim(), cut.label, real.said(), shown, late_said_us(&ran.pieces), carried_said(&ran), run::homes_end_said(&placed.homes, &ran.log)))
+    let thrown = if run::works_ahead(&l.ir) { run::thrown_said(Some(ran.server.thrown)) } else { String::new() };
+    Ok(format!("{}\n{}, a {} wire: the client and the server in two processes on this machine, over the loopback\n→ {}\n{}{}{}{}", p.text.split('→').next().unwrap_or("").trim(), cut.label, real.said(), shown, late_said_us(&ran.pieces), carried_said(&ran), thrown, run::homes_end_said(&placed.homes, &ran.log)))
 }
 
 /// what was late, as `late_said` says it, a time under a millisecond in
@@ -771,6 +782,22 @@ mod tests {
         let most = out.lines().find_map(|l| l.strip_prefix("late: ")).unwrap_or("");
         assert!(most.starts_with("nothing") || most.ends_with(" µs") || most.split(" the most ").nth(1).is_some_and(|m| m.ends_with(" ms") && m.trim_end_matches(" ms").parse::<f64>().is_ok_and(|v| v < 10.0)), "{}", out);
         assert!(out.contains("the socket: client → server ") && out.contains("; server → client "), "{}", out);
+    }
+
+    /// Memory of its own, really (fm3 wire.md): with one carried field
+    /// dropped from the cut, which only a test can ask for, the server's
+    /// process has only its own memory to read, and the case goes wrong.
+    /// hello's countdown switched off at the client, its switch not carried
+    /// to the server: the server counts down all the same
+    #[test]
+    fn a_real_wire_has_memory_of_its_own() {
+        let native = suite::backend_policy(suite::Backend::Native).unwrap();
+        let hello = Path::new("suite/zero/hello");
+        let case = "run() with countdown off";
+        let right = run_real(hello, case, &native, opt::MAX_LEVEL, Some("all"), Real::default(), None).unwrap();
+        assert!(right.contains("\n→ \"hello world\\ngoodbye\"\n"), "{}", right);
+        let wrong = run_real(hello, case, &native, opt::MAX_LEVEL, Some("all"), Real::default(), Some("__on_countdown")).unwrap();
+        assert!(wrong.contains("\n→ \"10\\n9\\n8\\n7\\n6\\n5\\n4\\n3\\n2\\n1\\nhello world\\ngoodbye\"\n"), "{}", wrong);
     }
 
     /// what step one refuses, each by name in one line that says which
