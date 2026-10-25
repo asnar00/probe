@@ -89,7 +89,7 @@ pub fn emit_wired(dir: &Path, server: Option<&str>, then: &[(String, i64)], wire
 /// <units> at <time>`, as the calls that say them to the program; or
 /// why it cannot be run. A move goes forward in time, and a store has
 /// room for `places::MOVES` of them
-fn cut_of(p: &super::places::Placed, server: Option<&str>, then: &[(String, i64)]) -> Result<super::places::Cut, String> {
+pub(super) fn cut_of(p: &super::places::Placed, server: Option<&str>, then: &[(String, i64)]) -> Result<super::places::Cut, String> {
     let (first, later) = cuts_named(p, server, then)?;
     if !later.is_empty() && !p.moved {
         return Err("the store was not built to have its cut moved".into());
@@ -107,7 +107,7 @@ fn cut_of(p: &super::places::Placed, server: Option<&str>, then: &[(String, i64)
     Ok(p.moves(&first, &later))
 }
 
-fn cuts_named(p: &super::places::Placed, server: Option<&str>, then: &[(String, i64)]) -> Result<(BTreeSet<usize>, Vec<(BTreeSet<usize>, i64)>), String> {
+pub(super) fn cuts_named(p: &super::places::Placed, server: Option<&str>, then: &[(String, i64)]) -> Result<(BTreeSet<usize>, Vec<(BTreeSet<usize>, i64)>), String> {
     let first = match server {
         Some(names) => p.named(names)?,
         None => BTreeSet::new(),
@@ -409,7 +409,7 @@ fn timed_expect(e: &store::Expect) -> bool {
 
 /// a case overridden in one context: the case with the runner's label,
 /// the context, and why it does not run there
-struct Over {
+pub(super) struct Over {
     text: String,
     context: String,
     why: String,
@@ -417,13 +417,13 @@ struct Over {
 
 /// one run of a case: in which effective context, under which of the
 /// runner's labels
-struct Run {
-    case: usize,
+pub(super) struct Run {
+    pub(super) case: usize,
     off: BTreeSet<String>,
     /// the switches that make it, in order: the runner's context, then
     /// the case's own line
-    switches: Vec<(String, bool)>,
-    label: String,
+    pub(super) switches: Vec<(String, bool)>,
+    pub(super) label: String,
 }
 
 /// the call of a case as written, `run()`, `counted (10)`, before any
@@ -448,7 +448,7 @@ fn call_text(p: &Planned) -> String {
 /// the case's own line applied — and where two lines of one feature
 /// make the same call in one effective context, the line naming more
 /// switches stands. Gives the runs and a report line per override
-fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), String> {
+pub(super) fn plan(s: &store::Store, cases: &[Planned]) -> Result<(Vec<Run>, Vec<Over>), String> {
     // `>existing` falls through to an older definition, which must exist
     for (rank, f) in s.features.iter().enumerate().filter(|(_, f)| f.existing_cases) {
         let own: Vec<&Planned> = cases.iter().filter(|p| p.feature == f.name).collect();
@@ -532,7 +532,7 @@ fn describe(off: &BTreeSet<String>) -> String {
 }
 
 /// a case's line with the runner's context after it
-fn labelled(text: &str, label: &str) -> String {
+pub(super) fn labelled(text: &str, label: &str) -> String {
     if label.is_empty() {
         text.to_string()
     } else {
@@ -541,7 +541,7 @@ fn labelled(text: &str, label: &str) -> String {
 }
 
 /// the kind of place a backend is, as a `platform` body names it (log 31)
-fn kind_of(backend: Backend) -> &'static str {
+pub(super) fn kind_of(backend: Backend) -> &'static str {
     match backend {
         Backend::Native | Backend::ArmQemu => "arm64",
         Backend::Riscv => "riscv64",
@@ -554,7 +554,7 @@ fn kind_of(backend: Backend) -> &'static str {
 /// (section 15): a platform function with no body for it and no `ir`
 /// body, and every function that calls one, by name — with the platform
 /// function it reaches, for the skip line
-fn out_of_reach(module: &ssa::Module, funcs: &[lower::FnInfo], kind: &str) -> std::collections::HashMap<String, String> {
+pub(super) fn out_of_reach(module: &ssa::Module, funcs: &[lower::FnInfo], kind: &str) -> std::collections::HashMap<String, String> {
     let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for f in funcs {
         if let Some(kinds) = &f.platform {
@@ -834,7 +834,7 @@ pub fn never_said(wire: &Wire, expect: &store::Expect, got: &str) -> String {
 
 /// A store built for a wire that takes time (fm3 cut.md, "a wire that
 /// takes time"; log 269), on the runner's clock
-fn wired(dir: &Path) -> Result<store::Store, String> {
+pub(super) fn wired(dir: &Path) -> Result<store::Store, String> {
     let mut s = store::read(dir).map_err(|e| e.to_string())?;
     s.clock = store::Clock::Virtual;
     s.places = true;
@@ -1433,7 +1433,7 @@ fn wire_moved_case_said<W: Into<Wire>>(dir: &Path, which: &str, policy: &ssa::Po
 /// value at its home and at the copy. The home is the server, but where
 /// the cut ends with nothing on it, the client having taken the server's
 /// part (the chooser's last word was to take it) and with it being the home
-fn homes_end_said(homes: &[(String, String)], log: &[i64]) -> String {
+pub(super) fn homes_end_said(homes: &[(String, String)], log: &[i64]) -> String {
     let mut out = String::new();
     // (the home's stamps that were later than the item's own time)
     let stamped: Vec<&[i64]> = log.chunks(6).filter(|c| c.len() == 6 && c[1] == 28).collect();
@@ -2237,7 +2237,7 @@ pub(super) struct Wires {
 /// line than its case's is not compared: the time it reads is the
 /// world's, which a wire that takes time moves, and a case about that
 /// says `with wire` (fm3 places.md, point 3)
-fn home_stamped(log: &[i64]) -> bool {
+pub(super) fn home_stamped(log: &[i64]) -> bool {
     log.chunks(6).any(|c| c.len() == 6 && c[1] == 28)
 }
 
@@ -2670,7 +2670,7 @@ fn test_wire_moves(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: u
 /// by name, passed over and counted (fm3 question 152)
 /// a case asked for by its line at a cut that names two people or more
 /// (hop fifty-eight): refused, where and why
-fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
+pub(super) fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
     for f in &s.features {
         if let Some(c) = f.cases.iter().find(|c| c.people.len() > 1 && c.text.split('→').next().unwrap_or("").trim() == which.trim()) {
             return Err(format!("{}:{}: {}", f.md_file, c.line, lower::TWO_OVER_A_WIRE));
@@ -2682,7 +2682,7 @@ fn two_named_refused(s: &store::Store, which: &str) -> Result<(), String> {
 /// The line that names the cases a placed build passes over (hop
 /// fifty-eight): those that name two people or more, one person being
 /// what is built over a wire. One line a store, where it has any
-fn two_named(s: &store::Store, tag: &str, name: &str, report: &mut Report) {
+pub(super) fn two_named(s: &store::Store, tag: &str, name: &str, report: &mut Report) {
     let n = s.features.iter().flat_map(|f| &f.cases).filter(|c| c.people.len() > 1).count();
     if n > 0 {
         report.log.push_str(&format!("{:<5} {:<16} {} case{} name{} two people or more, passed over at a cut: over a wire that takes time two people run at three places, every line at its device (`with wire`, `run --wire`)\n", tag, name, n, if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }));
@@ -2779,13 +2779,13 @@ fn test_cuts(sdir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, 
 }
 
 /// does the case expect a failed check?
-fn checks(expect: &store::Expect) -> bool {
+pub(super) fn checks(expect: &store::Expect) -> bool {
     matches!(expect, store::Expect::Check | store::Expect::CheckAt(_))
 }
 
 /// a stop that named no line: a failed check and nothing more, or a
 /// trap the machine's own (wasm's remainder by zero)
-fn untraced(e: &str) -> bool {
+pub(super) fn untraced(e: &str) -> bool {
     // (... or named a line of the language's own, which is not the
     // line a person is told, fm3 log 228)
     e == suite::checked() || e.starts_with("trap:") || e.strip_prefix(suite::checked()).is_some_and(|r| r.trim().strip_prefix("at ").is_some_and(|at| at.starts_with(&format!("{}:", crate::host::OWN_SITE))))
@@ -2835,7 +2835,7 @@ fn traced(dir: &Path, policy: &ssa::Policy, backend: Backend, level: usize, call
 /// did the call give what the case expects? A text result is compared
 /// with one trailing newline removed, so `>hi() → "hi"` matches one
 /// `print "hi"`
-fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, String) {
+pub(super) fn judge(expect: &store::Expect, got: Result<suite::Got, String>) -> (bool, String) {
     match (expect, got) {
         // each person's device's output, in the order the case names
         // them (hop fifty-seven): the text cut at the gathering's
@@ -2935,7 +2935,7 @@ fn people_got(g: &suite::Got, n: usize) -> Vec<suite::Got> {
 /// before it merges away, a stamp belonging to the characters (question
 /// 53); and the last piece loses one trailing newline, as a plain text
 /// result does
-fn pieces(got: &suite::Got) -> Vec<(String, i64)> {
+pub(super) fn pieces(got: &suite::Got) -> Vec<(String, i64)> {
     let bytes = got.text.as_bytes();
     let mut out: Vec<(String, i64)> = Vec::new();
     let (mut from, mut now) = (0usize, 0i64);

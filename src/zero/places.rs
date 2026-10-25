@@ -225,6 +225,10 @@ pub struct Placed {
     /// (hop fifty-nine) a pair of contexts a person: each person a client
     /// of their own, and the server a context for each person's part
     pub pairs: bool,
+    /// where the wire takes time, the fields an item may carry, each with
+    /// its bit's place, its name and its type (hop sixty: what the real
+    /// wire's harness reads and writes)
+    carried: Vec<(usize, String, String)>,
 }
 
 /// one thing a move hands across: its byte in the move's table, the
@@ -1205,6 +1209,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
         }
     }
     let mut conts: Vec<(i64, Option<usize>)> = Vec::new();
+    let mut real_carried = Vec::new();
     if wire {
         let ids: Vec<(i64, Option<usize>)> = fns.iter().find(|f| f.name == "__act_go").map(|f| f.body.iter().filter_map(|l| def(l.trim())).filter_map(|(n, _, rhs)| Some((n.strip_prefix('n')?.parse::<i64>().ok()?, rhs.split('(').next()?.to_string()))).map(|(id, g)| (id, owner.get(&g).copied().filter(|&o| o < nu))).collect()).unwrap_or_default();
         let heres: BTreeSet<String> = lines.iter().flat_map(|l| called(l)).filter_map(|c| c.strip_prefix("__here__")).map(str::to_string).collect();
@@ -1213,6 +1218,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
         let home_words: Vec<(usize, String, String)> = homes.iter().enumerate().filter(|(_, (_, w))| w != "user").filter_map(|(k, (n, _))| ctx_fields.iter().find(|(f, _)| f == n).filter(|(_, ty)| carried(ty, &structs) && word(named.get(ty).map_or(ty.as_str(), |t| t.as_str())) && ty != "ptr").map(|(_, ty)| (k, n.clone(), ty.clone()))).collect();
         let carried_fields: Vec<(usize, String, String)> = fields.iter().enumerate().filter(|(_, (_, ty, plain))| *plain && word(named.get(ty).map_or(ty.as_str(), |t| t.as_str())) && ty != "ptr").map(|(j, (n, t, _))| (j, n.clone(), t.clone())).collect();
         conts = ids.clone();
+        real_carried = carried_fields.clone();
         if stamps {
             out.push_str(&format!("\n; (hop fifty-eight) a push into a group's or everyone's stream that keeps a tick an item: its home stamps it (fm3 places.md, \"whose clock stamps a shared item\"). The home is the server, and its time for a push is the later of its own and the world's clock, when the push reached it; a line of the record, 28, says where that is the later. At the client, and while the client runs the server's part again, a push is stamped with the place's own time\nfn __push_home(s: any$, v: any)\n    r: ptr = get s, ring\n    step: i64 = load r, 40\n    regular: u1 = cmp.gt step, 0\n    if regular\n        push(s, v)\n    else\n        t: i64 = __home_now()\n        push(s, t, v)\n    ret\nfn __push_home(s: any$, block: any[])\n    r: ptr = get s, ring\n    step: i64 = load r, 40\n    regular: u1 = cmp.gt step, 0\n    if regular\n        push(s, block)\n    else\n        t: i64 = __home_now()\n        push(s, t, block)\n    ret\nfn __home_now() -> i64\n    t: i64 = __now()\n    p: index = __wplace()\n    srv: u1 = cmp.eq p, 1\n    if srv\n    else\n        ret t\n{again}    wp: ptr = addr __w\n    w: i64 = load wp\n    late: u1 = cmp.gt w, t\n    if late\n    else\n        ret t\n    ln: i64 = load wp, 32\n    lroom: u1 = cmp.lt ln, {log}\n    if lroom\n        li: index = conv ln\n        l0: index = mul li, 6\n        lp: ptr = addr __wlog\n        store 1: i64, lp, l0, 8\n        l1: index = add l0, 1\n        store 28: i64, lp, l1, 8\n        l2: index = add l0, 2\n        store w, lp, l2, 8\n        l3: index = add l0, 3\n        store 0: i64, lp, l3, 8\n        l4: index = add l0, 4\n        store t, lp, l4, 8\n        l5: index = add l0, 5\n        store 0: i64, lp, l5, 8\n        ln2: i64 = add ln, 1\n        store ln2, wp, 32\n    ret w\n", log = WIRE_LOG, again = if choose { "    gw: ptr = addr __wg\n    g: i64 = load gw\n    ag: u1 = cmp.ne g, 0\n    if ag\n        ret t\n" } else { "" }));
         }
@@ -1229,7 +1235,7 @@ pub fn rewrite(ir: &str, units: &[Unit], wire: bool, changes: bool, choose: bool
     } else {
         out
     };
-    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default(), homes, stamps, pairs }))
+    Ok((out, Placed { units, facts, crossings: crossings.into_iter().collect(), fields, rings, sigs, copied, moved, hand_fields, ring_at, held, pool, left, sizes: (size, hsize), wire, glue, unwired, conts, clock_dues, named, stack: Default::default(), homes, stamps, pairs, carried: real_carried }))
 }
 
 /// what the world's text is written from
@@ -2253,4 +2259,92 @@ pub fn cuts(p: &Placed) -> Vec<BTreeSet<usize>> {
     }
     out.extend((0..p.units.len()).map(|u| [u].into_iter().collect::<BTreeSet<usize>>()));
     out
+}
+
+impl Placed {
+    /// The real wire, step one (fm3 wire.md; hop sixty): what a build for a
+    /// wire that takes time gains so that each place can run in a process
+    /// of its own, the harness being the world. The module's queue as the
+    /// harness reads and writes it, a row as words, and the few words of
+    /// the world it needs; each case's twin in two, its call begun and
+    /// what it gave read back; and at each place its own line of the
+    /// record for each home kept as a word. Nothing in it knows what a
+    /// socket is, and nothing of a build without it changes: the text is
+    /// added after the build's own. `ir` is that build's text
+    pub fn real_text(&self, ir: &str) -> Result<String, String> {
+        if !self.wire {
+            return Err("the real wire runs a build for a wire that takes time".into());
+        }
+        let (q, flight) = (WIRE_Q, 2 * POOL);
+        let ranked = ir.contains("\ndata __wq_r: ");
+        let runs = ir.contains("\nfn __run()\n");
+        let cols: Vec<String> = if ir.contains("\ndata __act_due: ") { self.pool.clone() } else { Vec::new() };
+        let nf = self.carried.len();
+        let mut t = String::from("\n; the real wire (fm3 wire.md, step one; hop sixty): each place in a process of its own, and the harness, which is the world there, carrying the rows that cross as bytes. What follows is the module's queue as the harness reads and writes it, a row as words, and the few words of the world it needs. Nothing here knows what a socket is\n");
+        // the row the harness takes next, and the row an arriving one goes into
+        t.push_str(&format!("\n; how many rows this place has put on the wire toward the other that the harness has not taken\nfn __wq_out() -> i64\n    p: index = __wplace()\n    to: index = sub 1, p\n    wp: ptr = addr __w\n    t2: index = mul to, 2\n    hi: index = add t2, 24\n    ti: index = add t2, 25\n    head: i64 = load wp, hi, 8\n    tail: i64 = load wp, ti, 8\n    n: i64 = sub tail, head\n    ret n\n\n; the earliest of them, its row in the queue\nfn __wq_head_out() -> index\n    p: index = __wplace()\n    to: index = sub 1, p\n    wp: ptr = addr __w\n    t2: index = mul to, 2\n    hi: index = add t2, 24\n    head: i64 = load wp, hi, 8\n    m: i64 = rem head, {q}\n    mi: index = conv m\n    qb: index = mul to, {q}\n    row: index = add qb, mi\n    ret row\n\n; ... and the harness has taken it\nfn __wq_row_done()\n    p: index = __wplace()\n    to: index = sub 1, p\n    wp: ptr = addr __w\n    t2: index = mul to, 2\n    hi: index = add t2, 24\n    head: i64 = load wp, hi, 8\n    h2: i64 = add head, 1\n    store h2, wp, hi, 8\n    ret\n\n; the row toward this place an arriving one goes into: the next of its queue, which must have room\nfn __wq_tail_in() -> index\n    p: index = __wplace()\n    wp: ptr = addr __w\n    p2: index = mul p, 2\n    hi: index = add p2, 24\n    ti: index = add p2, 25\n    head: i64 = load wp, hi, 8\n    tail: i64 = load wp, ti, 8\n    used: i64 = sub tail, head\n    room: u1 = cmp.lt used, {q}\n    check room\n    m: i64 = rem tail, {q}\n    mi: index = conv m\n    qb: index = mul p, {q}\n    row: index = add qb, mi\n    ret row\n", q = q));
+        // a field of the context an item carries, as a word, by the place of its bit
+        let mut get = format!("\n; a field of the context a row carries, as a word, by the place of its bit among the fields the wire may carry\nfn __wq_field_get(row: index, f: i64) -> i64\n    qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n    qe: ptr(__ctx) = index qm, row\n    qp: ptr = cast qe\n    x: __ctx = load qp\n", q2 = 2 * q);
+        let mut set = format!("\n; ... and one set from a word, in the row an arriving item has\nfn __wq_field_set(row: index, f: i64, v: i64)\n    qm: ptr(array(__ctx, {q2})) = addr __wq_ctx\n    qe: ptr(__ctx) = index qm, row\n    qp: ptr = cast qe\n    x: __ctx = load qp\n", q2 = 2 * q);
+        for (k, (_, name, ty)) in self.carried.iter().enumerate() {
+            let base = self.named.get(ty).map_or(ty.as_str(), |b| b.as_str());
+            let from = if base == "u1" { format!("        b{k}: u1 = cmp.ne v, 0\n", k = k) } else { format!("        b{k}: {ty} = conv v\n", k = k, ty = ty) };
+            get.push_str(&format!("    is{k}: u1 = cmp.eq f, {k}\n    if is{k}\n        a{k}: {ty} = get x, {name}\n        w{k}: i64 = conv a{k}\n        ret w{k}\n", k = k, ty = ty, name = name));
+            set.push_str(&format!("    is{k}: u1 = cmp.eq f, {k}\n    if is{k}\n{from}        y{k}: __ctx = set x, {name}, b{k}\n        store y{k}, qp\n        ret\n", k = k, name = name, from = from));
+        }
+        get.push_str("    ret 0\n");
+        set.push_str("    ret\n");
+        t.push_str(&get);
+        t.push_str(&set);
+        // the k-th field a mask carries, by the order of their bits
+        t.push_str(&format!("\n; the place of the bit of the k-th field a mask says a row carries, in the order of their bits\nfn __wq_nth(c: i64, k: i64) -> i64\n    f: i64 = loop(i: i64 = 0, n: i64 = 0) bound {b}\n        done: u1 = cmp.ge i, {nf}\n        if done\n            break -1\n        one: i64 = shl 1, i\n        bit: i64 = and c, one\n        has: u1 = cmp.ne bit, 0\n        hit: u1 = cmp.eq n, k\n        found: u1 = and has, hit\n        if found\n            break i\n        n1: i64 = add n, 1\n        n2: i64 = if has\n            yield n1\n        else\n            yield n\n        i2: i64 = add i, 1\n        continue i2, n2\n    ret f\n\n; ... and how many fields a mask says\nfn __wq_count(c: i64) -> i64\n    cnt: i64 = loop(i: i64 = 0, n: i64 = 0) bound {b}\n        done: u1 = cmp.ge i, {nf}\n        if done\n            break n\n        one: i64 = shl 1, i\n        bit: i64 = and c, one\n        has: u1 = cmp.ne bit, 0\n        n1: i64 = add n, 1\n        n2: i64 = if has\n            yield n1\n        else\n            yield n\n        i2: i64 = add i, 1\n        continue i2, n2\n    ret cnt\n", b = nf + 1, nf = nf));
+        // a column of a record in flight, by its place
+        let mut colget = format!("\n; a column of the record a row carries, a function partway's, by its place among the pool's columns\nfn __wq_col_get(row: index, k: i64) -> i64\n    fl: index = add row, {flight}\n", flight = flight);
+        let mut colset = format!("\n; ... and one set, in the row an arriving item has\nfn __wq_col_set(row: index, k: i64, v: i64)\n    fl: index = add row, {flight}\n", flight = flight);
+        for (k, c) in cols.iter().enumerate() {
+            colget.push_str(&format!("    is{k}: u1 = cmp.eq k, {k}\n    if is{k}\n        p{k}: ptr = addr {c}\n        v{k}: i64 = load p{k}, fl, 8\n        ret v{k}\n", k = k, c = c));
+            colset.push_str(&format!("    is{k}: u1 = cmp.eq k, {k}\n    if is{k}\n        p{k}: ptr = addr {c}\n        store v, p{k}, fl, 8\n        ret\n", k = k, c = c));
+        }
+        colget.push_str("    ret 0\n");
+        colset.push_str("    ret\n");
+        t.push_str(&colget);
+        t.push_str(&colset);
+        let nc = cols.len();
+        // the row out, as words
+        t.push_str(&format!("\n; how many words the earliest row toward the other place carries after its eight (fm3 wire.md, \"what a row is on the wire\"): a block of text its bytes, eight a word; a function partway its record, a word a column of the pool, and the fields of the context it carries; a telling the fields it carries\nfn __wq_row_size() -> i64\n    row: index = __wq_head_out()\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    cp: ptr = addr __wq_c\n    c: i64 = load cp, row, 8\n    is2: u1 = cmp.eq kind, 2\n    if is2\n        bp: ptr = addr __wq_b\n        b: i64 = load bp, row, 8\n        b7: i64 = add b, 7\n        w: i64 = div b7, 8\n        ret w\n    n: i64 = __wq_count(c)\n    is4: u1 = cmp.eq kind, 4\n    if is4\n        n4: i64 = add n, {nc}\n        ret n4\n    is5: u1 = cmp.eq kind, 5\n    if is5\n        ret n\n    ret 0\n\n; word j of the earliest row toward the other place: from 0 its eight words, when it arrives by the sender's clock, what it is, its three values, which fields it carries, how much of the other's sending it answers, its sender's own time and the rank of the turn that sent it; then, from 8, the words `__wq_row_size` counts\nfn __wq_row_out(j: i64) -> i64\n    row: index = __wq_head_out()\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    is0: u1 = cmp.eq j, 0\n    if is0\n        p0: ptr = addr __wq_at\n        v0: i64 = load p0, row, 8\n        ret v0\n    is1: u1 = cmp.eq j, 1\n    if is1\n        ret kind\n    ap: ptr = addr __wq_a\n    a: i64 = load ap, row, 8\n    is2: u1 = cmp.eq j, 2\n    if is2\n        ret a\n    bp: ptr = addr __wq_b\n    b: i64 = load bp, row, 8\n    is3: u1 = cmp.eq j, 3\n    if is3\n        ret b\n    cp: ptr = addr __wq_c\n    c: i64 = load cp, row, 8\n    is4: u1 = cmp.eq j, 4\n    if is4\n        ret c\n    is5: u1 = cmp.eq j, 5\n    if is5\n        p5: ptr = addr __wq_e\n        v5: i64 = load p5, row, 8\n        ret v5\n    is6: u1 = cmp.eq j, 6\n    if is6\n        p6: ptr = addr __wq_t\n        v6: i64 = load p6, row, 8\n        ret v6\n    is7: u1 = cmp.eq j, 7\n    if is7\n{rank}    k: i64 = sub j, 8\n    t2: u1 = cmp.eq kind, 2\n    if t2\n        tp: ptr = addr __wq_text\n        o: i64 = mul k, 8\n        w: i64 = loop(i: i64 = 0, acc: i64 = 0) bound 9\n            done: u1 = cmp.ge i, 8\n            if done\n                break acc\n            oi: i64 = add o, i\n            past: u1 = cmp.ge oi, b\n            if past\n                break acc\n            at: i64 = add a, oi\n            ai: index = conv at\n            by: u8 = load tp, ai, 1\n            bw: i64 = conv by\n            sh: i64 = mul i, 8\n            bs: i64 = shl bw, sh\n            acc2: i64 = or acc, bs\n            i2: i64 = add i, 1\n            continue i2, acc2\n        ret w\n    t4: u1 = cmp.eq kind, 4\n    if t4\n        inrec: u1 = cmp.lt k, {nc}\n        if inrec\n            cv: i64 = __wq_col_get(row, k)\n            ret cv\n    off: i64 = if t4\n        yield {nc}\n    else\n        yield 0\n    kf: i64 = sub k, off\n    f: i64 = __wq_nth(c, kf)\n    fv: i64 = __wq_field_get(row, f)\n    ret fv\n", nc = nc, rank = if ranked { "        p7: ptr = addr __wq_r\n        v7: i64 = load p7, row, 8\n        ret v7\n" } else { "        ret 0\n" }));
+        // the row in, as words
+        t.push_str(&format!("\n; word j of a row arriving at this place from the other, as `__wq_row_out` gave it there, into the next row of its queue toward this place: its words but the first, when it arrives, which is this place's to say; then the words after them, a block of text's bytes into this place's own text in flight, a record's columns into the row's record, a field into the row's context\nfn __wq_row_in(j: i64, v: i64)\n    row: index = __wq_tail_in()\n    is1: u1 = cmp.eq j, 1\n    if is1\n        p1: ptr = addr __wq_kind\n        store v, p1, row, 8\n        ret\n    is2: u1 = cmp.eq j, 2\n    if is2\n        p2: ptr = addr __wq_a\n        store v, p2, row, 8\n        ret\n    is3: u1 = cmp.eq j, 3\n    if is3\n        p3: ptr = addr __wq_b\n        store v, p3, row, 8\n        ret\n    is4: u1 = cmp.eq j, 4\n    if is4\n        p4: ptr = addr __wq_c\n        store v, p4, row, 8\n        ret\n    is5: u1 = cmp.eq j, 5\n    if is5\n        p5: ptr = addr __wq_e\n        store v, p5, row, 8\n        ret\n    is6: u1 = cmp.eq j, 6\n    if is6\n        p6: ptr = addr __wq_t\n        store v, p6, row, 8\n        ret\n    is7: u1 = cmp.eq j, 7\n    if is7\n{rank}        ret\n    low: u1 = cmp.lt j, 8\n    if low\n        ret\n    k: i64 = sub j, 8\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    t2: u1 = cmp.eq kind, 2\n    if t2\n        wp: ptr = addr __w\n        o: i64 = load wp, 40\n        o8: i64 = mul k, 8\n        base: i64 = add o, o8\n        e: i64 = add base, 8\n        fits: u1 = cmp.le e, 65536\n        check fits\n        tp: ptr = addr __wq_text\n        loop(i: i64 = 0) bound 9\n            done: u1 = cmp.ge i, 8\n            if done\n                break\n            sh: i64 = mul i, 8\n            bv: i64 = shr v, sh\n            bm: i64 = and bv, 255\n            by: u8 = conv bm\n            at: i64 = add base, i\n            ai: index = conv at\n            store by, tp, ai, 1\n            i2: i64 = add i, 1\n            continue i2\n        ret\n    cp: ptr = addr __wq_c\n    c: i64 = load cp, row, 8\n    t4: u1 = cmp.eq kind, 4\n    if t4\n        inrec: u1 = cmp.lt k, {nc}\n        if inrec\n            __wq_col_set(row, k, v)\n            ret\n    off: i64 = if t4\n        yield {nc}\n    else\n        yield 0\n    kf: i64 = sub k, off\n    f: i64 = __wq_nth(c, kf)\n    __wq_field_set(row, f, v)\n    ret\n\n; ... and it is put on: when it arrives by this place's clock, which the harness says, and for a block of text its place in this place's own text in flight\nfn __wq_row_put(at: i64)\n    row: index = __wq_tail_in()\n    p0: ptr = addr __wq_at\n    store at, p0, row, 8\n    kp: ptr = addr __wq_kind\n    kind: i64 = load kp, row, 8\n    t2: u1 = cmp.eq kind, 2\n    if t2\n        wp: ptr = addr __w\n        o: i64 = load wp, 40\n        ap: ptr = addr __wq_a\n        store o, ap, row, 8\n        bp: ptr = addr __wq_b\n        b: i64 = load bp, row, 8\n        o2: i64 = add o, b\n        store o2, wp, 40\n    p: index = __wplace()\n    wq: ptr = addr __w\n    p2: index = mul p, 2\n    ti: index = add p2, 25\n    tail: i64 = load wq, ti, 8\n    tl2: i64 = add tail, 1\n    store tl2, wq, ti, 8\n    ret\n", nc = nc, rank = if ranked { "        p7: ptr = addr __wq_r\n        store v, p7, row, 8\n" } else { "" }));
+        // the world's words the harness needs
+        let kept = "    k2: i64 = add nv, 0\n";
+        let still = "    g5: u1 = and g3, 1\n";
+        t.push_str(&format!("\n; the world's clock at this place, which the harness says: its own, the real one, from when its case began\nfn __wreal_now(t: i64)\n    wp: ptr = addr __w\n    store t, wp\n    ret\n\n; the world begins at this place (`__world`'s first lines, at one place): its note of what was last sent or was sent of each field is its own context as it was made, before anything is set at it, as each field's first value is at both places; and at the server the lines that walk a stored stream are given their turn\nfn __wreal_begin(pi: i32)\n    __zero_context(pi)\n    pl: index = conv pi\n    fc: ptr = context()\n    fx: __ctx = load fc\n    sm: ptr(array(__ctx, 2)) = addr __wshadow\n    e0: ptr(__ctx) = index sm, pl\n    q0: ptr = cast e0\n    store fx, q0\n{run}    ret\n\n; the next time something can happen at this place by its clock, the never-time where nothing can but what arrives: a row held until its time, and at the client its own earliest thing and the time the server said its earliest thing is, which the client's word of where it stands may free when the clock reaches it\nfn __wreal_due(pi: i32) -> i64\n    __zero_context(pi)\n    p: index = conv pi\n    wp: ptr = addr __w\n    now: i64 = load wp\n    nv: i64 = const {never}\n    p2: index = mul p, 2\n    hi: index = add p2, 24\n    ti: index = add p2, 25\n    head: i64 = load wp, hi, 8\n    tail: i64 = load wp, ti, 8\n    has: u1 = cmp.lt head, tail\n    a0: i64 = if has\n        m: i64 = rem head, {q}\n        mi: index = conv m\n        qb: index = mul p, {q}\n        row: index = add qb, mi\n        atp: ptr = addr __wq_at\n        v: i64 = load atp, row, 8\n        yield v\n    else\n        yield nv\n    al: u1 = cmp.gt a0, now\n    a1: i64 = if al\n        yield a0\n    else\n        yield nv\n    srv: u1 = cmp.ne p, 0\n    if srv\n        ret a1\n    t: i64, r: i64 = __list_next()\n    tl: u1 = cmp.gt t, now\n    t2: i64 = if tl\n        yield t\n    else\n        yield nv\n    b8: index = mul p, 8\n    j3: index = add b8, 11\n    pt: i64 = load wp, j3, 8\n    pl: u1 = cmp.gt pt, now\n    pt2: i64 = if pl\n        yield pt\n    else\n        yield nv\n{kept}    n1: i64 = min(a1, t2)\n    n2: i64 = min(n1, pt2)\n    n3: i64 = min(n2, k2)\n    ret n3\n\n; has this place nothing left to do but what may yet arrive: nothing on its list, nothing in either way of its queue, an answer to everything it sent, no field changed that crosses. The harness ends the case when both places have nothing left and each has had all the other sent\nfn __wreal_idle(pi: i32) -> u1\n    __zero_context(pi)\n    p: index = conv pi\n    t: i64, r: i64 = __list_next()\n    nv: i64 = const {never}\n    empty: u1 = cmp.ge t, nv\n    wp: ptr = addr __w\n    h0: i64 = load wp, 192\n    t0: i64 = load wp, 200\n    h1: i64 = load wp, 208\n    t1: i64 = load wp, 216\n    e0: u1 = cmp.ge h0, t0\n    e1: u1 = cmp.ge h1, t1\n    b: index = mul p, 8\n    i0: index = add b, 8\n    sent: i64 = load wp, i0, 8\n    i1: index = add b, 9\n    acked: i64 = load wp, i1, 8\n    quiet: u1 = cmp.eq sent, acked\n    dirty: u1 = __wfields_dirty()\n    clean: u1 = xor dirty, 1\n    g0: u1 = and empty, e0\n    g1: u1 = and g0, e1\n    g2: u1 = and g1, quiet\n    g3: u1 = and g2, clean\n{still}    ret g5\n", q = q, never = NEVER, run = if runs { "    pw: i64 = conv pi\n    atsrv: u1 = cmp.ne pw, 0\n    if atsrv\n        __run()\n" } else { "" }, kept = kept, still = still));
+        // each case's twin in two: its call begun, and what it gave
+        let lines: Vec<&str> = ir.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let head = lines[i];
+            if !head.starts_with("fn ") {
+                i += 1;
+                continue;
+            }
+            let end = (i + 1..lines.len()).find(|&j| !lines[j].starts_with("    ")).unwrap_or(lines.len());
+            if let Some(w) = (i + 1..end).find(|&j| lines[j] == "    __world()") {
+                let name = head["fn ".len()..].split('(').next().unwrap_or("");
+                let params = &head[head.find('(').unwrap_or(0)..head.find(')').map_or(head.len(), |c| c + 1)];
+                let rets = head.find(") -> ").map(|r| &head[r + 1..]).unwrap_or("");
+                t.push_str(&format!("\n; `{name}` in two (hop sixty): its call begun at the client, and what it gave read back once the world has ended\nfn {name}__begin{params}\n", name = name, params = params));
+                for l in &lines[i + 1..w] {
+                    t.push_str(l);
+                    t.push('\n');
+                }
+                t.push_str(&format!("    ret\nfn {name}__end(){rets}\n", name = name, rets = rets));
+                for l in &lines[w + 1..end] {
+                    t.push_str(l);
+                    t.push('\n');
+                }
+            }
+            i = end;
+        }
+        Ok(t)
+    }
 }

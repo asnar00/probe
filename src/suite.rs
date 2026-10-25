@@ -388,6 +388,31 @@ extern "C" fn on_trap(_sig: i32) {
     }
 }
 
+/// (hop sixty) a child forked for one place of a real wire (`zero/real.rs`)
+/// begins as every call's child does: its JIT pages to be run, and a
+/// failed check's trap writing the program's text to its pipe, `fd`
+pub(crate) fn child_traps(jit: &emit::jit::JitCode, fd: i32) {
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+        #[cfg(target_os = "macos")]
+        fn pthread_jit_write_protect_np(enabled: i32);
+    }
+    use std::sync::atomic::Ordering;
+    #[cfg(target_os = "macos")]
+    unsafe {
+        pthread_jit_write_protect_np(1)
+    };
+    TRAP_JIT.store(jit as *const emit::jit::JitCode as usize, Ordering::SeqCst);
+    TRAP_FD.store(fd, Ordering::SeqCst);
+    TRAP_TRACE.store(false, Ordering::SeqCst);
+    unsafe { signal(5, on_trap) };
+}
+
+/// ... and what its trap wrote, said as a failed check is
+pub(crate) fn trap_said(text: &str) -> String {
+    checked_at(text)
+}
+
 /// the call on a thread, the program's output ring read beside it and
 /// printed as it fills (log 77): the runner is the platform's reader of
 /// `out$` (fm3 question 31), and on the real clock the program sleeps

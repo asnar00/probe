@@ -10,6 +10,7 @@ pub mod lex;
 pub mod lower;
 pub mod meter;
 pub mod places;
+pub mod real;
 pub mod run;
 pub mod store;
 pub mod syntax;
@@ -123,6 +124,24 @@ fn home_said(args: &[String]) -> Result<Option<(run::HomeSaid, Vec<usize>)>, Str
         }
     }
     Ok(Some((said, used)))
+}
+
+/// A real wire (fm3 wire.md; hop sixty): `--wire real`, and a set delay
+/// the receiver holds each row for, `--wire real, 100 ms`. Gives it and
+/// the places in `args` it took; None where the word after `--wire` is
+/// not `real`
+fn real_said(args: &[String]) -> Result<Option<(real::Real, Vec<usize>)>, String> {
+    let Some(i) = args.iter().position(|a| a == "--wire") else { return Ok(None) };
+    let first = args.get(i + 1).map(String::as_str);
+    if first != Some("real") && first != Some("real,") {
+        return Ok(None);
+    }
+    let used = vec![i, i + 1];
+    if first == Some("real,") || args.get(i + 2).map(String::as_str) == Some(",") {
+        return Err("a set delay on a real wire is not built yet: `--wire real`".to_string());
+    }
+    let delay = 0;
+    Ok(Some((real::Real { delay }, used)))
 }
 
 fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
@@ -306,6 +325,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         eprintln!("                            [--wire <time>]            ... over a wire that takes that long, `--wire 100 ms`: the case by its own times, what was late, and, where the server works ahead of a key, the turns it took and threw away; with `--then`, the cut moved over that wire");
         eprintln!("                            [--choose <bound>]         ... with `--server` and `--wire`: the runner chooses each cut after the first, between it and nothing on the server, at the client, by round trips of its own: lateness under the bound is none; each choice printed with its time and reason");
         eprintln!("                            [--wire <time> then <time>|gone at <time> ...]  ... over a wire whose delay changes while it runs, or that goes: an item takes the delay of when it is put on, a gone wire holds it until it comes back; beneath what was late, the pieces never shown where the wire went for good");
+        eprintln!("                            [--wire real]              ... over a real wire: the client and the server in two processes on this machine, the rows crossing a loopback socket as bytes, on the real clock (fm3 wire.md, step one)");
         eprintln!("       probe zero <store> placement [--server <units>]   every unit and where it runs at that cut, and what the wire carries");
         eprintln!("                            [--wire <time>] [--case <case>]  ... and one case over such a wire: what it carried, when each left and arrived, each piece the client dropped unshown and each time the server went back");
         eprintln!("                            [--then <units> at <time>]  ... and each move: what is handed across, and the cut after it; with `--wire`, the move's own items among what the wire carried");
@@ -436,6 +456,28 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // ... over a real wire (hop sixty): `--wire real`, the client and
+            // the server in two processes on this machine
+            match real_said(args) {
+                Ok(Some((r, rused))) => {
+                    let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| !a.starts_with("--") && *a != "-t" && Some(*i) != at.map(|k| k + 1) && !used.contains(i) && !rused.contains(i)).map(|(_, a)| a) else { return usage() };
+                    return match real::run_real(Path::new(store), case, &policy, level, server.map(String::as_str), r, None) {
+                        Ok(out) => {
+                            print!("{}", out);
+                            ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            ExitCode::FAILURE
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            }
             // ... at three places, a case that names two people or more
             // (hop fifty-nine): `--wire ann 100 ms, bob 2 s`, `--gone ...`
             match home_said(args) {
