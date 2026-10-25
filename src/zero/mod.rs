@@ -140,9 +140,18 @@ fn real_said(args: &[String]) -> Result<Option<(real::Real, Vec<usize>)>, String
     if first == Some("real,") || args.get(i + 2).map(String::as_str) == Some(",") {
         return Err("a set delay on a real wire is not built yet: `--wire real`".to_string());
     }
+    if let Some(w) = args.get(i + 2).filter(|a| !a.starts_with("--")) {
+        if w == "then" || w.ends_with("bytes/s") || w == "gone" {
+            return Err(real::refused_step(false, false, false, false, true).unwrap());
+        }
+    }
     let delay = 0;
     Ok(Some((real::Real { delay }, used)))
 }
+
+/// what `emit places` and `placement` say of a real wire: its build is the
+/// build for a wire with the queue's entries, and it is run, not placed
+const REAL_RUN: &str = "a real wire is run, not placed: `probe zero <store> run '<case>' --server <units> --wire real`; its build is the one for a wire that takes time, `emit places --wire 0 ms`, with the queue's entries the harness reads and writes";
 
 fn wire_said(args: &[String]) -> Result<(Option<run::Wire>, Vec<usize>), String> {
     let Some(i) = args.iter().position(|a| a == "--wire") else {
@@ -391,6 +400,7 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         // trace build's (fm3 tracer.md)
         Some(store) if args.get(1).map(String::as_str) == Some("emit") && matches!(args.get(2).map(String::as_str), Some("sites" | "trace" | "places")) => match match args[2].as_str() {
             "trace" => run::emit_trace(Path::new(store)),
+            "places" if real_said(args).is_ok_and(|r| r.is_some()) => Err(REAL_RUN.to_string()),
             "places" => moves_said(args).and_then(|(then, _)| {
                 let server = args.iter().position(|a| a == "--server").and_then(|i| args.get(i + 1)).map(String::as_str);
                 match wire_said(args)? {
@@ -424,6 +434,10 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
         Some(store) if args.get(1).map(String::as_str) == Some("placement") => {
             let server = args.iter().position(|a| a == "--server").and_then(|i| args.get(i + 1));
             let case = args.iter().position(|a| a == "--case").and_then(|i| args.get(i + 1));
+            if real_said(args).is_ok_and(|r| r.is_some()) {
+                eprintln!("{}", REAL_RUN);
+                return ExitCode::FAILURE;
+            }
             match moves_said(args).and_then(|(then, _)| match wire_said(args)? {
                 (Some(w), _) => run::placement_wire_moved(Path::new(store), server.map(String::as_str), &then, w, case.map(String::as_str), &policy, level),
                 _ => run::placement(Path::new(store), server.map(String::as_str), &then),
@@ -461,6 +475,12 @@ pub fn cmd(args: &[String], level: usize, policy: ssa::Policy) -> ExitCode {
             match real_said(args) {
                 Ok(Some((r, rused))) => {
                     let Some(case) = args.iter().enumerate().skip(2).find(|(i, a)| !a.starts_with("--") && *a != "-t" && Some(*i) != at.map(|k| k + 1) && !used.contains(i) && !rused.contains(i)).map(|(_, a)| a) else { return usage() };
+                    let choose = args.iter().any(|a| a == "--choose");
+                    let other = args.iter().any(|a| a == "--gone");
+                    if let Some(why) = real::refused_step(!then.is_empty(), choose, false, fast, other) {
+                        eprintln!("{}", why);
+                        return ExitCode::FAILURE;
+                    }
                     return match real::run_real(Path::new(store), case, &policy, level, server.map(String::as_str), r, None) {
                         Ok(out) => {
                             print!("{}", out);

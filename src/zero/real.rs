@@ -584,6 +584,37 @@ pub fn joined(client: &Side, server: &Side, delay: i64) -> Vec<i64> {
     rows.into_iter().flatten().collect()
 }
 
+/// What step one of the real wire refuses, by name, each in one line that
+/// says which step it is (fm3 wire.md, "the steps")
+pub fn refused_step(then: bool, choose: bool, two: bool, fast: bool, other: bool) -> Option<String> {
+    if fast {
+        return Some("`--wire real` and `--fast` are not said together: a real wire runs on the real clock".into());
+    }
+    if then {
+        return Some("a cut that moves while it runs is not run over a real wire in step one: it is step three's (fm3 wire.md)".into());
+    }
+    if choose {
+        return Some("the chooser is not run over a real wire in step one: it is step three's (fm3 wire.md)".into());
+    }
+    if two {
+        return Some("a case that names two people or more is three places, and three places over real wires are step three's (fm3 wire.md)".into());
+    }
+    if other {
+        return Some("a wire with a speed, or one that changes or goes, is not a real wire's in step one: step two's (fm3 wire.md)".into());
+    }
+    None
+}
+
+/// What a store's build cannot carry over a real wire, by name: a function
+/// partway whose record keeps an array or a string holds an address in the
+/// sender's memory, which the simulated wire reads where it lands
+pub fn refused_build(ir: &str) -> Option<String> {
+    if ir.contains("\nfn __act_land(") {
+        return Some("a function partway here keeps an array or a string, and its record would carry an address in the sender's memory: not carried over a real wire in step one".into());
+    }
+    None
+}
+
 /// What a real wire needs of a store: its build for a wire that takes
 /// time, with the queue's entries, and the module made from it
 pub fn build(dir: &Path, policy: &ssa::Policy, level: usize) -> Result<(store::Store, lower::Lowered, ssa::Module, ssa::Policy), String> {
@@ -593,6 +624,9 @@ pub fn build(dir: &Path, policy: &ssa::Policy, level: usize) -> Result<(store::S
     let placed: &Placed = l.placed.as_ref().ok_or("the store was not placed")?;
     let more = placed.real_text(&l.ir)?;
     l.ir.push_str(&more);
+    if let Some(why) = refused_build(&l.ir) {
+        return Err(why);
+    }
     let module = run::build(&l.ir, &policy, level)?;
     Ok((s, l, module, policy))
 }
@@ -689,8 +723,8 @@ pub fn run_real(dir: &Path, which: &str, policy: &ssa::Policy, level: usize, ser
     }
     let cut = placed.cut_but(&first, dropped);
     let calls = run::calls_of(&s, &l, &policy)?;
-    if run::case_named(&calls, which).is_none() {
-        run::two_named_refused(&s, which)?;
+    if run::case_named(&calls, which).is_none() && run::names_two(dir, which) {
+        return Err(refused_step(false, false, true, false, false).unwrap());
     }
     let p = run::case_named(&calls, which).ok_or_else(|| format!("no case '{}' in the store's ## testing sections", which))?;
     let jit = jit_of(&module)?;
@@ -737,5 +771,21 @@ mod tests {
         let most = out.lines().find_map(|l| l.strip_prefix("late: ")).unwrap_or("");
         assert!(most.starts_with("nothing") || most.ends_with(" µs") || most.split(" the most ").nth(1).is_some_and(|m| m.ends_with(" ms") && m.trim_end_matches(" ms").parse::<f64>().is_ok_and(|v| v < 10.0)), "{}", out);
         assert!(out.contains("the socket: client → server ") && out.contains("; server → client "), "{}", out);
+    }
+
+    /// what step one refuses, each by name in one line that says which
+    /// step it is (fm3 wire.md, "the steps")
+    #[test]
+    fn step_one_refuses_by_name() {
+        let native = suite::backend_policy(suite::Backend::Native).unwrap();
+        assert!(refused_step(true, false, false, false, false).unwrap().contains("step three's"));
+        assert!(refused_step(false, true, false, false, false).unwrap().contains("step three's"));
+        assert!(refused_step(false, false, true, false, false).unwrap().contains("step three's"));
+        assert!(refused_step(false, false, false, true, false).unwrap().contains("real clock"));
+        assert!(refused_step(false, false, false, false, true).unwrap().contains("step two's"));
+        assert_eq!(refused_step(false, false, false, false, false), None);
+        let two = run_real(Path::new("suite/zero/counter"), "run() with ann in \"k\" at 1 s, bob in \"k\" at 1 s", &native, opt::MAX_LEVEL, Some("all"), Real::default(), None).unwrap_err();
+        assert!(two.contains("three places") && two.contains("step three's"), "{}", two);
+        assert!(refused_build("\nfn __act_land(row: index)\n").is_some() && refused_build("\nfn __world()\n").is_none());
     }
 }
