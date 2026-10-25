@@ -1,0 +1,60 @@
+; words wider than 32 bits on the GPU: each thread works a value up past
+; 2^32 — products whose cross terms reach the high word, a carry out of
+; the low word and a borrow into it, shifts past a word both ways,
+; signed and unsigned comparisons where only the high words differ —
+; then the group sums them through group memory as reduce.ssa does, and
+; each thread leaves the group's total less its own value in its word.
+; On WebGPU, which has no 64-bit integer, every one of those is a pair of
+; 32-bit words (src/emit_wgsl.rs); natively and on Metal it is one.
+
+;! __kernel 64 64 -> 15067968209676, 15056378275081, 15044788340405, 15050378274815, 15021608470759, 15027198404973, 15032788340113, 15021198404947
+;! __kernel 128 64 2 -> 15067968209676, 15056378275081, 15044788340405, 15050378274815, 15021608470759, 15027198404973, 15032788340113, 15021198404947
+
+group acc: array(i64, 64)
+
+fn __kernel(mem: ptr, area: ptr, id: i64, tid: i64, group: i64)
+    a: i64 = mul id, 3000000007
+    b: i64 = add a, 4294967291
+    c: i64 = sub b, 4294967297
+    sq: i64 = mul b, b
+    d: i64 = shl id, 33
+    e: i64 = xor c, d
+    neg: i64 = sub 0, e
+    s: i64 = shr neg, 37
+    u: u64 = cast neg
+    us: u64 = shr u, 40
+    usi: i64 = cast us
+    low: u1 = cmp.lt s, -2
+    big: u1 = cmp.gt u, 18446744000000000000
+    m: i64 = if low
+        yield usi
+    else
+        yield s
+    w: i64 = if big
+        n1: i64 = and sq, 1023
+        yield n1
+    else
+        yield 7
+    v0: i64 = add e, m
+    v: i64 = add v0, w
+    t: ptr(array(i64, 64)) = addr acc
+    store v, t, tid
+    group_sync()
+    loop(half: i64 = 32)
+        done: u1 = cmp.eq half, 0
+        if done
+            break
+        below: u1 = cmp.lt tid, half
+        if below
+            other: i64 = add tid, half
+            x: i64 = load t, tid
+            y: i64 = load t, other
+            z: i64 = add x, y
+            store z, t, tid
+        group_sync()
+        h2: i64 = shr half, 1
+        continue h2
+    total: i64 = load t, 0
+    r: i64 = sub total, v
+    store r, area, id, 8
+    ret

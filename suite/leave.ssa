@@ -1,0 +1,52 @@
+; branches that leave more than one loop at once, in a kernel: a search
+; through three nested loops that goes on with the outer loop from inside
+; the middle one, with the middle loop from inside the inner one, and
+; leaves all three when it finds what it wants. WGSL's `break` leaves
+; one loop, so on WebGPU these are the branches the emitter sends
+; through its `brk` variable (src/emit_wgsl.rs); natively and on Metal
+; they are plain jumps. Word id is what thread id's search found.
+
+;! __kernel 64 64 -> 108, 108, 108, 86, 86, 172, 172, 172, 223, 223, 223, 223, 19, 19, 19, 125
+;! __kernel 64 32 -> 108, 108, 108, 86, 86, 172, 172, 172, 223, 223, 223, 223, 19, 19, 19, 125
+
+fn __kernel(mem: ptr, area: ptr, id: i64)
+    entry:
+        lim0: i64 = mul id, 7
+        lim: i64 = add lim0, 40
+        jmp outer(1, 0)
+    outer(i: i64, acc: i64):
+        oe: u1 = cmp.ge i, 12
+        br oe, done(acc), mid_start
+    mid_start:
+        jmp middle(1, acc)
+    middle(j: i64, b: i64):
+        je: u1 = cmp.ge j, i
+        br je, outer_next(b), in_start
+    outer_next(b2: i64):
+        i1: i64 = add i, 1
+        jmp outer(i1, b2)
+    in_start:
+        jmp inner(1, b)
+    inner(k: i64, c: i64):
+        ke: u1 = cmp.ge k, j
+        br ke, middle_next(c), look
+    middle_next(c2: i64):
+        j1: i64 = add j, 1
+        jmp middle(j1, c2)
+    look:
+        ij: i64 = mul i, j
+        p: i64 = mul ij, k
+        found: u1 = cmp.gt p, lim
+        br found, hit, step
+    hit:
+        r0: i64 = mul p, 1000
+        r1: i64 = add r0, c
+        rf: i64 = and r1, 255
+        jmp done(rf)
+    step:
+        c1: i64 = add c, k
+        k1: i64 = add k, 1
+        jmp inner(k1, c1)
+    done(r: i64):
+        store r, area, id, 8
+        ret
