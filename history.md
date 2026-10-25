@@ -4,6 +4,19 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: three angles and two sizes on WebGPU and Metal, each the same as the CPU's — `5a97bee` · 2026-10-25
+
+Hop sixty-two, part 4. `probe zero <store> kernel` takes several calls, each run on each GPU named; under `PROBE_TIME=k` the drivers dispatch the same kernel k times on the same memory and print the least, and the kernel form asks for five and calls the CPU's `frame` five times, keeping the least: one dispatch alone timed from 1.1 to 47 ms for the same frame, the first after a pipeline is made carrying the GPU's waking and Chrome's scheduling. `probe zero suite/zero/triangle kernel 'frame (64, 0.0)' 'frame (64, 0.5)' 'frame (64, 2.0943951)' 'frame (256, 0.5)' --wgsl --air`: **all eight the same as the CPU's, word for word**, 4096 of 4096 at 64 a side and 65536 of 65536 at 256, on WebGPU and on Metal, which takes the module as it is. Over three runs, each time the least of five:
+
+| frame | WebGPU's dispatch | Metal's dispatch | the CPU's loop |
+|---|---|---|---|
+| 64 a side, three angles | 0.2 to 1.8 ms | 0.44 to 0.53 ms | 0.36 to 0.42 ms |
+| 256 a side | 0.4 to 1.9 ms | 2.7 to 2.9 ms | 5.6 to 6.0 ms |
+
+A dispatch is timed from its submit to the area read back; WebGPU's clock in the page is cut to a tenth of a millisecond. The whole run is about 2.55 s on WebGPU, most of it Chrome's start, and about 0.13 s on Metal with the driver's. The CPU's loop is 90 ns a pixel at both sizes; the GPUs' dispatch hardly grows with sixteen times the pixels, which is the first number for `places.md`'s "how good a place is at a thing".
+
+---
+
 ### zero: the kernel form — `probe zero <store> kernel 'frame (64, 0.5)' --wgsl`, the frame on WebGPU against the CPU's — `9e440ea` · 2026-10-25
 
 Hop sixty-two, parts 2 and 3. The store is lowered as for any build, and `lower::kernel_plan` reads its text for the called function's one line, `px[] << pixel ([0 to side * side], side, angle)`: the function applied across the range and what it is handed for item k, the range's item, the caller's parameters by name, or numbers written out; anything else is refused with the shape it wants. The kernel (`src/zero/kernel.rs`) is the lowered IR with `__kernel(mem, area, id)` added, which loads the call's values from a data item the kernel form adds, `__kernel_args`, a word each, the angle as its f32 bits, calls `pixel (id, side, angle)` and stores its colour as word `id` of the area; it is built under the air platform's policy, where `float` is f32, printed by `emit_wgsl.rs` unchanged (1 011 lines) and run by `tools/driver_webgpu.js` with a thread a pixel. The area is compared word for word with the CPU's frame, `frame` as `lower.rs` makes it today, run on the JIT in a child with a 16 MB arena (the bootstrap's 64 KB fails at a frame of 32 a side) and its items copied out a word each, a stream being four words that a JIT call cannot hand back. `--air` builds the same module with `emit_air.rs` and runs it through `tools/driver_metal.py`. **`frame (64, 0.5)`: 4096 pixels on WebGPU, 4096 the same as the CPU's**, and the same on Metal. What `pixel` reaches: its arguments, `sine`, `cosine`, `snapped`, `edge`, `rgba` and the float library's conversions between i64 and f32, printed as integer code; not the arena, not the context, no stream, and no check. The WGSL does not depend on the angle, which is eight bytes of the data image. Under `PROBE_TIME=1` both drivers print the dispatch's milliseconds after each area; without it neither prints anything new. `emit_wgsl.rs`'s output for the seven kernel files is byte for byte what it was; `probe test wgsl` 10/10.
