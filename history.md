@@ -4,6 +4,12 @@ What landed, one short entry per commit — or per group, when several arrived t
 
 ---
 
+### zero: the frame crosses a wire that takes time — every cut of the triangle runs over 100 ms — `2c927ae` · 2026-10-26
+
+Hop sixty-three, part 1. Over a wire of 100 ms every cut of `suite/zero/triangle` but the fully downstream one ended in a bare `a failed check`. Dropping the checks one function at a time found two causes. **The arena ran out**: a function partway's record holds the kept values of every function in its chain, and `__act_land` copied each of them at every arrival at either place, so with `frame` on the server and `pixel` at the client the frame's range and the queue it is making were copied twice for each of the 64 pixels. Now a record arriving in a call or its end, over a wire whose cut does not move, copies only what the continuation it goes on with reads that the other place wrote (`__act_land_at`): the function's parameters at its start, the called function's results after a call; every other value is of a function at the other place, written and read only there, and crosses back as it came. A move, the chooser and a turn taken ahead copy everything as before. **The wire's 256 rows filled**: with everything on the server `said frame()` writes its 704 characters in one turn, a row each; where the wire toward the client is half full a character now joins the text row before it, if that row is not yet taken, is for the same time and arrives at the same moment (`__wjoin`), and not in a build whose rows carry a rank or a size. `PROBE_ZERO_CUTS=wire=100` over the suite against hop sixty-two's binary: every other store's line the same at every cut, and the triangle's now holds at all 14 of its cuts, 154 of 154 runs by their own times. No plain build changed, nor any placed build without a wire; the placed build for a wire changed in 34 stores.
+
+---
+
 ### kernel.rs: the bootstrap's arena holds a frame of 32 a side, not a few thousand items — `5ae4221` · 2026-10-25
 
 A comment in `src/zero/kernel.rs` and the entry for `9e440ea` below said the bootstrap's 64 KB arena held a frame of a few thousand items and failed at 32 a side; measured, `frame (32, a)` fits it and `frame (64, a)` fails the arena's check, which is why the kernel form's CPU build has 16 MB. Both now say so; no code changed.
