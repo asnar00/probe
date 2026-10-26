@@ -1013,6 +1013,25 @@ mod tests {
     /// 100 ms where it arrives, so hello with everything on the server shows
     /// its first piece a round trip late, as over the simulated wire, and
     /// the loopback's own time beside it
+    /// hop sixty-three: a function partway that keeps an array crosses the
+    /// socket. With `frame` on the server its record crosses for each of
+    /// its 64 pixels and the frame comes back as its words, laid out in
+    /// the client's arena; with everything on the server the frame is
+    /// text. Each the case's own line, as with no wire
+    #[test]
+    fn a_real_wire_carries_a_frame() {
+        let native = suite::backend_policy(suite::Backend::Native).unwrap();
+        let tri = Path::new("suite/zero/triangle");
+        let (_, shown, _) = run::wire_case(tri, "said frame()", &native, opt::MAX_LEVEL, suite::Backend::Native, Some("none"), 0, 0).unwrap();
+        let line = format!("→ {}", shown);
+        for server in ["frame", "all", "pixel"] {
+            let out = run_real(tri, "said frame()", &native, opt::MAX_LEVEL, Some(server), Real::default(), None).unwrap();
+            assert!(out.lines().any(|l| l == line), "server: {}\n{}", server, out);
+        }
+        let spin = run_real(tri, "spin()", &native, opt::MAX_LEVEL, Some("all"), Real::default(), None).unwrap();
+        assert!(spin.contains("\n→ \".......#....##...#.......\\n") && spin.contains("\" at 4 hz\nlate: 1 piece of 4, "), "{}", spin);
+    }
+
     #[test]
     fn a_real_wire_holds_a_set_delay() {
         let native = suite::backend_policy(suite::Backend::Native).unwrap();

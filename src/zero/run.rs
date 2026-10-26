@@ -3462,6 +3462,36 @@ mod tests {
     /// before the server has said it will begin nothing earlier, which only
     /// this test can ask for, the case's call is written before the
     /// clock's first beat
+    /// hop sixty-three: the frame crosses a wire that takes time. `said
+    /// frame()` with `frame` alone on the server, its record crossing for
+    /// each of its 64 pixels, and with everything on the server, its 704
+    /// characters written in one turn, each give the case's own line,
+    /// where hop sixty-two's build failed a check: the arena ran out, every
+    /// arrival copying the frame's values whoever read them, and the wire's
+    /// 256 rows filled. And the spin, four frames worked out at the server
+    /// over a wire of 100 ms: one late, the first, by a round trip
+    #[test]
+    fn the_frame_crosses_a_wire_that_takes_time() {
+        let native = suite::backend_policy(Backend::Native).unwrap();
+        let tri = Path::new("suite/zero/triangle");
+        let (_, line, _) = wire_case(tri, "said frame()", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), 0, 0).unwrap();
+        assert!(line.starts_with("\"4280291344 4280291344 ") && line.matches("42").count() == 64, "{}", line);
+        let late = |pieces: &[Shown]| -> Vec<(i64, i64)> { pieces.iter().filter(|p| p.shown > p.own).map(|p| (p.own, p.shown)).collect() };
+        for (server, most) in [("frame", 13_000_000), ("all", 200_000)] {
+            let (_, shown, pieces) = wire_case(tri, "said frame()", &native, opt::MAX_LEVEL, Backend::Native, Some(server), 100_000, 0).unwrap();
+            assert_eq!(shown, line, "server: {}", server);
+            assert_eq!(late(&pieces), vec![(0, most)], "server: {}", server);
+        }
+        // (everything on the server: past half the wire's rows, a character joins the row before it)
+        let table = placement_wire(tri, Some("all"), 100_000, Some("said frame()"), &native, opt::MAX_LEVEL).unwrap();
+        assert!(table.contains("and 120 or more"), "{}", table);
+        let (_, frames, pieces) = wire_case(tri, "spin()", &native, opt::MAX_LEVEL, Backend::Native, Some("none"), 0, 0).unwrap();
+        assert_eq!(frames.matches("\\n").count(), 3, "{}", frames);
+        let (_, shown, far) = wire_case(tri, "spin()", &native, opt::MAX_LEVEL, Backend::Native, Some("all"), 100_000, 0).unwrap();
+        assert_eq!((shown, pieces.len(), far.len()), (frames, 4, 4));
+        assert_eq!(late(&far), vec![(0, 200_000)]);
+    }
+
     #[test]
     fn a_wire_takes_time() {
         let native = suite::backend_policy(Backend::Native).unwrap();
@@ -3937,7 +3967,9 @@ mod tests {
             assert!(ir.contains(&format!("\ndata {}: array(i64, ", col)), "no column {}", col);
         }
         assert!(ir.contains("\nfn __act_land(row: index)\n") && ir.contains("\nfn __act_land_int(c: ptr, row: index)\n") && ir.contains("\nfn __act_land_view_int(c: ptr, lc: ptr, sc: ptr, row: index)\n"));
-        assert!(ir.contains("        __act_carry(fl, slot)\n        __wland(slot)\n"), "a function partway that arrives has its values copied");
+        // (hop sixty-three) ... in a call or its end, what the continuation
+        // it goes on with reads that the other place wrote
+        assert!(ir.contains("        __act_carry(fl, slot)\n        __wland_at(slot, a)\n") && ir.contains("\nfn __act_land_at(row: index, k: i64)\n"), "a function partway that arrives has its values copied");
         // a structure is a column a field, a `float` a column, and an
         // enumeration a word
         let types = lower::lower(&wired(Path::new("suite/zero/types")).unwrap()).unwrap();
