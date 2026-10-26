@@ -1573,7 +1573,9 @@ pub fn placement_wire_moved<W: Into<Wire>>(dir: &Path, server: Option<&str>, the
         }
         chars.reverse();
         let n = w as usize;
-        format!("text {:?}{}", String::from_utf8_lossy(&chars).to_string(), if n > chars.len() { format!(" and {} more", n - chars.len()) } else { String::new() })
+        // (a block joined from characters where the wire was half full,
+        // hop sixty-three, is said as 127 where it has 127 or more)
+        format!("text {:?}{}", String::from_utf8_lossy(&chars).to_string(), if n == 127 && chars.len() == 7 { " and 120 or more".to_string() } else if n > chars.len() { format!(" and {} more", n - chars.len()) } else { String::new() })
     };
     let mut start: Option<i64> = None;
     for item in log.chunks(6).filter(|c| c.len() == 6) {

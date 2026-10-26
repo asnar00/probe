@@ -3099,6 +3099,10 @@ fn lower_pass(store: &Store, streams: &Names, uncelled: std::rc::Rc<std::cell::R
     // placed build's own functions call it)
     if store.places {
         roots.insert("__act_land".to_string());
+        // (hop sixty-three) what a record arriving in a call or its end copies
+        if store.wire && !store.moved && !store.choose {
+            roots.insert("__act_land_at".to_string());
+        }
     }
     // a function partway through a push at a rate is a thing going on
     // (fm3 log 232): the rewrite, or the store as it was

@@ -284,6 +284,11 @@ struct Maker<'a> {
     /// array's or a string's ring, or of a view's first word with its
     /// length's and its stride's, and the type of an item
     addrs: Vec<(String, String, bool)>,
+    /// the columns a continuation reads that another place may have
+    /// written (hop sixty-three): its function's parameters, where it
+    /// is the function's start, and the results of the function it
+    /// called, where it goes on after the call. Its number and the column
+    reads: Vec<(i64, String)>,
 }
 
 fn point_of(head: &str, r: &BTreeSet<String>) -> Option<Point> {
@@ -880,6 +885,7 @@ impl<'a> Maker<'a> {
         self.held = f.params.iter().map(|(n, _)| n.clone()).collect();
         for (n, t) in &f.params {
             let col = self.field(&f.name, n, t);
+            self.reads.push((self.here, col.clone()));
             self.read(&col, n, t, "    ", &mut out);
         }
         self.top(f, &ss, &kinds, 0, &mut out);
@@ -897,6 +903,7 @@ impl<'a> Maker<'a> {
                     if let Point::Call(d, g, _) = p {
                         for (k, (n, t)) in d.iter().enumerate() {
                             let col = self.res(g, k);
+                            self.reads.push((self.here, col.clone()));
                             self.read(&col, n, t, "    ", &mut out);
                         }
                     }
@@ -928,6 +935,7 @@ impl<'a> Maker<'a> {
                         if let Point::Call(d, g, _) = p {
                             for (k, (n, t)) in d.iter().enumerate() {
                                 let col = self.res(g, k);
+                                self.reads.push((self.here, col.clone()));
                                 self.read(&col, &format!("{}__r", n), t, "    ", &mut out);
                                 map.insert(n.clone(), format!("{}__r", n));
                             }
@@ -981,6 +989,7 @@ impl<'a> Maker<'a> {
                         if let Point::Call(d, g, _) = p {
                             for (k, (n, t)) in d.iter().enumerate() {
                                 let col = self.res(g, k);
+                                self.reads.push((self.here, col.clone()));
                                 self.read(&col, n, t, "    ", &mut out);
                             }
                         }
@@ -1044,7 +1053,7 @@ pub fn rewrite(ir: &str, moved: bool, values: &HashMap<String, (Vec<String>, Vec
     if ir.matches("data __ctx_mem: array(__ctx, 2)").count() != 1 {
         return None;
     }
-    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true, types: Types::of(ir), values: values.clone(), unheld: Vec::new(), addrs: Vec::new() };
+    let mut m = Maker { r: &r, fns: by.iter().map(|(k, v)| (k.clone(), *v)).collect(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true, types: Types::of(ir), values: values.clone(), unheld: Vec::new(), addrs: Vec::new(), reads: Vec::new() };
     // (a parameter or a result of a stream's type is held where it is
     // a value, an array or a string: fm3 log 284)
     for g in &r {
@@ -1247,6 +1256,44 @@ fn land_text(addrs: &[(String, String, bool)]) -> Vec<String> {
     body.push_str("\n    ret");
     text.push(body);
     text
+}
+
+/// Where a record arrives at a place in a call or its end, over a
+/// wire whose cut does not move (hop sixty-three): only the values the
+/// continuation it goes on with reads that the other place wrote are
+/// copied, the parameters at a function's start and the results of
+/// the function it called after the call. Every other value it holds
+/// is of a function at the other place, written there and read there
+/// only, and crosses back as it came: copied at every arrival, as
+/// `__act_land` does, a frame's columns were copied twice for each of
+/// its 64 pixels and the arena ran out. `__land_fw` keeps one storage
+/// copied once at an arrival, as there
+fn land_at_text(addrs: &[(String, String, bool)], reads: &[(i64, String)]) -> Vec<String> {
+    if addrs.is_empty() {
+        return Vec::new();
+    }
+    let mut body = String::from("\n; a record has reached a place in a call or its end (hop sixty-three): what the continuation it goes on with reads that the other place wrote is copied into memory of this place's own, the parameters at a function's start and after a call the called function's results. The rest it holds is of functions at the other place, and crosses back as it came\nfn __act_land_at(row: index, k: i64)\n    fw: ptr = addr __land_fw\n    store 0: index, fw");
+    let mut ids: Vec<i64> = reads.iter().map(|(id, _)| *id).collect();
+    ids.sort();
+    ids.dedup();
+    for id in ids {
+        let cols: Vec<(usize, &(String, String, bool))> = addrs.iter().enumerate().filter(|(_, (col, _, _))| reads.iter().any(|(i, c)| *i == id && c == col)).collect();
+        if cols.is_empty() {
+            continue;
+        }
+        body.push_str(&format!("\n    is{id}: u1 = cmp.eq k, {id}\n    if is{id}", id = id));
+        for (j, (col, e, view)) in cols {
+            let name = e.replace(|c: char| !is_ident(c), "_");
+            if *view {
+                body.push_str(&format!("\n        p{id}_{j}: ptr = addr {col}__ptr\n        l{id}_{j}: ptr = addr {col}__len\n        s{id}_{j}: ptr = addr {col}__stride\n        __act_land_view_{name}(p{id}_{j}, l{id}_{j}, s{id}_{j}, row)", id = id, j = j, col = col, name = name));
+            } else {
+                body.push_str(&format!("\n        p{id}_{j}: ptr = addr {col}__ring\n        __act_land_{name}(p{id}_{j}, row)", id = id, j = j, col = col, name = name));
+            }
+        }
+        body.push_str("\n        ret");
+    }
+    body.push_str("\n    ret");
+    vec![body]
 }
 
 /// the lines that set a newly taken place's address columns to
@@ -1765,7 +1812,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>, values: &HashMap<String,
                 }
             }
         }
-        let mut m1 = Maker { r: r1, fns: by1.clone(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true, types: types.clone(), values: vals.clone(), unheld: Vec::new(), addrs: Vec::new() };
+        let mut m1 = Maker { r: r1, fns: by1.clone(), ids: HashMap::new(), fields: Vec::new(), tmp: 0, held: BTreeSet::new(), here: 0, ifs: true, types: types.clone(), values: vals.clone(), unheld: Vec::new(), addrs: Vec::new(), reads: Vec::new() };
         let mut order1: Vec<(bool, String, usize)> = Vec::new();
         for g in r1.iter() {
             let f = by1[g];
@@ -1899,6 +1946,7 @@ pub fn rewrite_wire(ir: &str, units: &BTreeSet<String>, values: &HashMap<String,
         return Err(format!("a function keeps a `{}` across a call that may cross or a step, which a place of the pool cannot hold", t));
     }
     text.extend(land_text(&m.addrs));
+    text.extend(land_at_text(&m.addrs, &m.reads));
     let kept: BTreeSet<String> = {
         let mut kept = BTreeSet::new();
         let mut todo: Vec<String> = fns.iter().filter(|f| !r.contains(&f.name)).flat_map(|f| lines[f.at.0 + 1..f.at.1].iter().flat_map(|l| called(l)).map(str::to_string).collect::<Vec<_>>()).filter(|c| r.contains(c)).collect();
