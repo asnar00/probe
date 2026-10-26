@@ -1,0 +1,19 @@
+float angle$ at (4 hz)
+int shown$ = spun (angle$)
+
+on dot (uint32 c)
+    if (c == 4278231295)
+        out$ << "#"
+    else
+        out$ << "."
+
+on (int n) << shown (float a)
+    dot (frame (5, a))
+    out$ << "\n"
+    n << 1
+
+on (int k$) << spun (float a$)
+    k$ << shown (a$)
+
+on spin()
+    angle$ << 0.0 << (angle$ + 0.5) while (angle$ < 1.5)

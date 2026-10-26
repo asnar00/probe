@@ -1890,7 +1890,7 @@ fn machine_output(
 /// of two contexts' capture (fm3 log 256)
 const AIR_AREA: u64 = 0x20_0000;
 /// what the GPU's path says of a program too large for it
-const AIR_OVERRUN: &str = "overrun the driver's area";
+pub(crate) const AIR_OVERRUN: &str = "overrun the driver's area";
 const AIR_HEAP: u64 = 0x30_0000;
 const AIR_MEM: u64 = 0x80_0000;
 

@@ -1835,6 +1835,15 @@ pub fn test(dir: &Path, backend: Backend, level: usize) -> Result<Report, String
                     report.case(ok, &name, &format!("{} [everything on the server, a wire of {}]", text, spell_late(d)), &note);
                 }
             }
+            // (hop sixty-three) a build for a wire whose data is more than
+            // the GPU driver's area holds is no program of that path, as
+            // `probe test air` says of `suite/far.ssa`: its cases about
+            // lateness are skipped, saying so
+            Err(e) if backend == Backend::Air && e.contains(suite::AIR_OVERRUN) => {
+                let n = wired(sdir).map(|s| s.features.iter().flat_map(|f| f.cases.iter()).filter(|c| c.wire.is_some()).count()).unwrap_or(1);
+                report.skipped += n;
+                report.log.push_str(&format!("skip  {:<16} {} case{} about lateness: the build for a wire: {}\n", name, n, if n == 1 { "" } else { "s" }, e));
+            }
             Err(e) => {
                 report.failed += 1;
                 report.log.push_str(&format!("FAIL  {:<16} {}\n", name, e));
