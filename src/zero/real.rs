@@ -41,6 +41,11 @@ const SAID_END: i64 = 30;
 /// was there when the case began, the two places having been joined
 /// before it, and the server's clock starts when it arrives
 const BEGINS: i64 = 31;
+/// ... and the end of what a place put on in one pass of its world, the
+/// rows before it handed to the module at the other place together (hop
+/// sixty-three): a turn's rows arrive at one moment over the simulated
+/// wire, and are delivered before the place arrived at says anything
+const BURST: i64 = 32;
 /// how many pings the client sends before its case begins
 const PINGS: i64 = 16;
 /// a row's head on the socket: its eight words and its payload's length
@@ -152,13 +157,18 @@ struct Link {
     heard: Option<(i64, i64)>,
     /// the pings answered
     pongs: Vec<i64>,
+    /// the module's rows arrived since the other's last end of a pass,
+    /// not yet handed over
+    held: Vec<([i64; 8], Vec<i64>)>,
+    /// rows written since this place's last end of a pass
+    unmarked: i64,
 }
 
 impl Link {
     fn new(sock: TcpStream) -> Result<Link, String> {
         sock.set_nodelay(true).map_err(|e| e.to_string())?;
         sock.set_nonblocking(true).map_err(|e| e.to_string())?;
-        Ok(Link { sock, buf: Vec::new(), eof: false, rows_out: 0, bytes_out: 0, rows_in: 0, bytes_in: 0, arrived: Vec::new(), heard: None, pongs: Vec::new() })
+        Ok(Link { sock, buf: Vec::new(), eof: false, rows_out: 0, bytes_out: 0, rows_in: 0, bytes_in: 0, arrived: Vec::new(), heard: None, pongs: Vec::new(), held: Vec::new(), unmarked: 0 })
     }
 
     /// a row on the socket (fm3 wire.md, "what a row is on the wire"): its
@@ -261,23 +271,33 @@ fn arrive(jit: &JitCode, p: i64, link: &mut Link, start: &mut Option<Instant>, d
             PONG => link.pongs.push(w[2]),
             SAID_END => link.heard = Some((w[2], w[3])),
             BEGINS => *start = Some(Instant::now()),
-            _ => {
-                let now = clock(start);
-                let at = if start.is_some() { now + delay } else { 0 };
-                link.rows_in += 1;
-                link.bytes_in += (HEAD + 8 * payload.len()) as i64;
-                link.arrived.push(now);
-                call(jit, "__zero_context", &[p])?;
-                for (j, v) in w.iter().enumerate().skip(1) {
-                    call(jit, "__wq_row_in", &[j as i64, *v])?;
+            BURST => {
+                for (w, payload) in std::mem::take(&mut link.held) {
+                    put(jit, p, link, start, delay, &w, &payload)?;
                 }
-                for (k, v) in payload.iter().enumerate() {
-                    call(jit, "__wq_row_in", &[8 + k as i64, *v])?;
-                }
-                call(jit, "__wq_row_put", &[at])?;
             }
+            _ => link.held.push((w, payload)),
         }
     }
+    Ok(())
+}
+
+/// one of the module's rows handed to its queue toward this place, when
+/// it arrives being this place's clock now and the set delay
+fn put(jit: &JitCode, p: i64, link: &mut Link, start: &Option<Instant>, delay: i64, w: &[i64; 8], payload: &[i64]) -> Result<(), String> {
+    let now = clock(start);
+    let at = if start.is_some() { now + delay } else { 0 };
+    link.rows_in += 1;
+    link.bytes_in += (HEAD + 8 * payload.len()) as i64;
+    link.arrived.push(now);
+    call(jit, "__zero_context", &[p])?;
+    for (j, v) in w.iter().enumerate().skip(1) {
+        call(jit, "__wq_row_in", &[j as i64, *v])?;
+    }
+    for (k, v) in payload.iter().enumerate() {
+        call(jit, "__wq_row_in", &[8 + k as i64, *v])?;
+    }
+    call(jit, "__wq_row_put", &[at])?;
     Ok(())
 }
 
@@ -294,6 +314,17 @@ fn flush(jit: &JitCode, p: i64, link: &mut Link) -> Result<(), String> {
         let payload: Vec<i64> = (0..size).map(|k| call(jit, "__wq_row_out", &[8 + k])).collect::<Result<_, _>>()?;
         call(jit, "__wq_row_done", &[])?;
         link.send(&w, &payload, true)?;
+        link.unmarked += 1;
+    }
+    Ok(())
+}
+
+/// the end of a pass of this place's world: what it wrote since the last
+/// is one piece of the other's arrival (hop sixty-three)
+fn mark(link: &mut Link) -> Result<(), String> {
+    if link.unmarked > 0 {
+        link.send(&[0, BURST, 0, 0, 0, 0, 0, 0], &[], false)?;
+        link.unmarked = 0;
     }
     Ok(())
 }
@@ -329,6 +360,11 @@ fn world(jit: &JitCode, p: i64, link: &mut Link, start: &mut Option<Instant>, de
             break;
         }
         flush(jit, p, link)?;
+        // (what this pass wrote is one piece of the other's arrival, as a
+        // turn's rows arrive at one moment over the simulated wire: whether
+        // the second of two rows had reached the other place before it said
+        // where it stood was a race of the loopback, hop sixty-three)
+        mark(link)?;
         let counts = (link.rows_out, link.rows_in);
         if call(jit, "__wreal_idle", &[p])? & 1 != 0 {
             if said != Some(counts) {
@@ -432,6 +468,7 @@ fn client_child(module: &ssa::Module, jit: &JitCode, port: u16, cut: &[(String, 
     call(jit, "__zero_context", &[0])?;
     call(jit, "__wsay", &[])?;
     flush(jit, 0, &mut link)?;
+    mark(&mut link)?;
     // the pings, while the server says where it stands: how long a row
     // takes there and back
 
@@ -615,12 +652,19 @@ pub fn refused_step(then: bool, choose: bool, two: bool, fast: bool, other: bool
     None
 }
 
-/// What a store's build cannot carry over a real wire, by name: a function
-/// partway whose record keeps an array or a string holds an address in the
-/// sender's memory, which the simulated wire reads where it lands
+/// What a store's build cannot carry over a real wire, by name. A function
+/// partway whose record keeps an array or a string is carried (hop
+/// sixty-three): what the continuation it goes on with reads that the
+/// sender wrote crosses as its words and is laid out in the receiver's
+/// arena (`land_vals_text`). Not where the server works ahead of a key:
+/// before each turn ahead it copies every value its records hold, and a
+/// record there holds the client's addresses for the client's functions
 pub fn refused_build(ir: &str) -> Option<String> {
-    if ir.contains("\nfn __act_land(") {
+    if ir.contains("\nfn __act_land(") && !ir.contains("\nfn __act_land_at(") {
         return Some("a function partway here keeps an array or a string, and its record would carry an address in the sender's memory: not carried over a real wire in step one".into());
+    }
+    if ir.contains("\nfn __act_land(") && ir.contains("\nfn __wland_all(") {
+        return Some("a function partway here keeps an array or a string, and the server works ahead of a key: before a turn ahead it copies every value its records hold, the client's among them, which are addresses in the client's memory; not carried over a real wire yet".into());
     }
     None
 }
@@ -764,9 +808,10 @@ pub fn late_said_us(pieces: &[run::Shown]) -> String {
 }
 
 /// the stores of step one (fm3 wire.md): the touchstone's and hop
-/// fifty-eight's, which `probe zero test <dir> --wire real` runs where it
+/// fifty-eight's, and from hop sixty-three the triangle's, its frame and
+/// its spin, which `probe zero test <dir> --wire real` runs where it
 /// finds them under the directory
-pub const STEP_ONE: [&str; 4] = ["hello", "restart", "stamp", "counter"];
+pub const STEP_ONE: [&str; 5] = ["hello", "restart", "stamp", "counter", "triangle"];
 
 /// what the suite over a real wire found
 #[derive(Default)]
